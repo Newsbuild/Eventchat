@@ -165,6 +165,12 @@ class ReportIn(BaseModel):
     reason: str
 
 
+class AdminCreateGroupIn(BaseModel):
+    name: str
+    member_ids: List[str]
+    admin_ids: List[str] = []
+
+
 # ---------- Auth ----------
 @api.post("/auth/login")
 async def login(data: LoginIn, response: Response):
@@ -552,6 +558,44 @@ async def admin_list_chats(admin: dict = Depends(require_admin)):
 async def admin_list_groups(admin: dict = Depends(require_admin)):
     groups = await db.chats.find({"type": "group"}, {"_id": 0}).to_list(1000)
     return groups
+
+
+@api.post("/admin/groups")
+async def admin_create_group(data: AdminCreateGroupIn, admin: dict = Depends(require_admin)):
+    if not data.name.strip():
+        raise HTTPException(400, "Gruppenname erforderlich")
+    if not data.member_ids:
+        raise HTTPException(400, "Mindestens ein Mitglied erforderlich")
+    # admin_ids must be a subset of member_ids
+    invalid_admins = [a for a in data.admin_ids if a not in data.member_ids]
+    if invalid_admins:
+        raise HTTPException(400, "Gruppen-Admins müssen Mitglieder sein")
+    # verify users exist
+    found = await db.users.count_documents({"id": {"$in": list(set(data.member_ids))}})
+    if found != len(set(data.member_ids)):
+        raise HTTPException(400, "Ein oder mehrere Nutzer existieren nicht")
+
+    group_id = str(uuid.uuid4())
+    chat = {
+        "id": group_id, "type": "group", "name": data.name,
+        "member_ids": list(set(data.member_ids)),
+        "admin_ids": list(set(data.admin_ids)),
+        "created_at": now_iso(),
+        "created_by": admin["id"],  # admin is creator, NOT a member
+        "created_by_admin": True,
+    }
+    await db.chats.insert_one(chat)
+    await db.messages.insert_one({
+        "id": str(uuid.uuid4()), "chat_id": group_id, "sender_id": None,
+        "text": f"Gruppe '{data.name}' wurde durch Administration erstellt",
+        "type": "system", "upload_id": None, "deleted": False,
+        "created_at": now_iso(),
+    })
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "create_group", "target_id": group_id,
+        "actor_id": admin["id"], "note": data.name, "created_at": now_iso(),
+    })
+    return {k: v for k, v in chat.items() if k != "_id"}
 
 
 @api.get("/admin/uploads")
