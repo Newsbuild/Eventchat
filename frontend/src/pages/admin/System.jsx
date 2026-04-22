@@ -1,19 +1,22 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+
+const SYSTEM_POLL_MS = 3000;
 
 export default function AdminSystem() {
     const [stats, setStats] = useState(null);
     const [tick, setTick] = useState(0);
 
-    useEffect(() => {
-        const load = async () => {
-            const { data } = await api.get("/admin/stats");
-            setStats(data);
-        };
-        load();
-        const iv = setInterval(() => { load(); setTick((t) => t + 1); }, 3000);
-        return () => clearInterval(iv);
+    const load = useCallback(async () => {
+        const { data } = await api.get("/admin/stats");
+        setStats(data);
     }, []);
+
+    useEffect(() => {
+        load();
+        const iv = setInterval(() => { load(); setTick((t) => t + 1); }, SYSTEM_POLL_MS);
+        return () => clearInterval(iv);
+    }, [load]);
 
     return (
         <div className="p-8">

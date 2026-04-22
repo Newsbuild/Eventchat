@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Activity, Users, Hash, MessageSquare, Flag, FileText } from "lucide-react";
 
@@ -15,21 +15,23 @@ function StatCard({ label, value, icon: Icon, accent }) {
     );
 }
 
+const DASHBOARD_POLL_MS = 5000;
+
 export default function AdminDashboard() {
     const [stats, setStats] = useState(null);
     const [chats, setChats] = useState([]);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const [s, c] = await Promise.all([api.get("/admin/stats"), api.get("/admin/chats")]);
         setStats(s.data);
         setChats(c.data);
-    };
+    }, []);
 
     useEffect(() => {
         load();
-        const iv = setInterval(load, 5000);
+        const iv = setInterval(load, DASHBOARD_POLL_MS);
         return () => clearInterval(iv);
-    }, []);
+    }, [load]);
 
     return (
         <div className="p-8">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2, X, Edit2 } from "lucide-react";
@@ -8,11 +8,11 @@ export default function AdminUsers() {
     const [showCreate, setShowCreate] = useState(false);
     const [editUser, setEditUser] = useState(null);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const { data } = await api.get("/users");
         setUsers(data);
-    };
-    useEffect(() => { load(); }, []);
+    }, []);
+    useEffect(() => { load(); }, [load]);
 
     const removeUser = async (id) => {
         if (!window.confirm("Nutzer wirklich löschen?")) return;

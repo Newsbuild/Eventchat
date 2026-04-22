@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 
 const AuthContext = createContext(null);
@@ -11,7 +11,11 @@ export function AuthProvider({ children }) {
         try {
             const { data } = await api.get("/auth/me");
             setUser(data);
-        } catch {
+        } catch (err) {
+            // Unauthenticated (401) is an expected state at app boot — log only unexpected failures
+            if (err?.response?.status !== 401) {
+                console.error("Auth refresh failed:", err);
+            }
             setUser(false);
         } finally {
             setLoading(false);
@@ -20,22 +24,25 @@ export function AuthProvider({ children }) {
 
     useEffect(() => { refresh(); }, [refresh]);
 
-    const login = async (email, password) => {
+    const login = useCallback(async (email, password) => {
         const { data } = await api.post("/auth/login", { email, password });
         setUser(data);
         return data;
-    };
+    }, []);
 
-    const logout = async () => {
-        try { await api.post("/auth/logout"); } catch {}
+    const logout = useCallback(async () => {
+        try { await api.post("/auth/logout"); } catch (err) {
+            console.warn("Logout request failed:", err);
+        }
         setUser(false);
-    };
+    }, []);
 
-    return (
-        <AuthContext.Provider value={{ user, loading, login, logout, refresh, setUser }}>
-            {children}
-        </AuthContext.Provider>
+    const value = useMemo(
+        () => ({ user, loading, login, logout, refresh, setUser }),
+        [user, loading, login, logout, refresh]
     );
+
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);

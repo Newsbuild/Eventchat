@@ -8,13 +8,25 @@ import {
     EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2
 } from "lucide-react";
 
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+const SECONDS_PER_DAY = 86400;
+const POLL_INTERVAL_MS = 3000;
+
+function renderLastMessagePreview(last) {
+    if (!last) return "Keine Nachrichten";
+    if (last.deleted) return <em className="text-zinc-600">(gelöscht)</em>;
+    if (last.type === "system") return <em className="text-zinc-600">{last.text}</em>;
+    return last.text || "Keine Nachrichten";
+}
+
 function relTime(iso) {
     if (!iso) return "";
     const d = new Date(iso);
     const diff = (Date.now() - d.getTime()) / 1000;
-    if (diff < 60) return "gerade eben";
-    if (diff < 3600) return `${Math.floor(diff / 60)} Min.`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} Std.`;
+    if (diff < SECONDS_PER_MINUTE) return "gerade eben";
+    if (diff < SECONDS_PER_HOUR) return `${Math.floor(diff / SECONDS_PER_MINUTE)} Min.`;
+    if (diff < SECONDS_PER_DAY) return `${Math.floor(diff / SECONDS_PER_HOUR)} Std.`;
     return d.toLocaleDateString("de-DE");
 }
 
@@ -47,7 +59,9 @@ export default function ChatPage() {
             const [chatsRes, usersRes] = await Promise.all([api.get("/chats"), api.get("/users")]);
             setChats(chatsRes.data);
             setAllUsers(usersRes.data);
-        } catch {}
+        } catch (err) {
+            console.error("Failed to load chats:", err);
+        }
         finally { setTimeout(() => setPolling(false), 300); }
     }, []);
 
@@ -60,7 +74,8 @@ export default function ChatPage() {
             ]);
             setSelectedChat(chatRes.data);
             setMessages(msgRes.data);
-        } catch {
+        } catch (err) {
+            console.error("Failed to load chat:", err);
             toast.error("Chat konnte nicht geladen werden");
         }
     }, []);
@@ -68,12 +83,12 @@ export default function ChatPage() {
     useEffect(() => { loadChats(); }, [loadChats]);
     useEffect(() => { if (chatId) loadChat(chatId); else setSelectedChat(null); }, [chatId, loadChat]);
 
-    // polling every 3s
+    // polling
     useEffect(() => {
         const iv = setInterval(() => {
             loadChats();
             if (chatId) loadChat(chatId);
-        }, 3000);
+        }, POLL_INTERVAL_MS);
         return () => clearInterval(iv);
     }, [chatId, loadChats, loadChat]);
 

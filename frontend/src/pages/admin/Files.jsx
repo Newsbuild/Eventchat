@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { toast } from "sonner";
 import { Upload, Trash2, Download } from "lucide-react";
 
+const BYTES_PER_KB = 1024;
+const BYTES_PER_MB = BYTES_PER_KB * 1024;
+
 function fmtSize(bytes) {
     if (!bytes && bytes !== 0) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024*1024) return `${(bytes/1024).toFixed(1)} KB`;
-    return `${(bytes/1024/1024).toFixed(1)} MB`;
+    if (bytes < BYTES_PER_KB) return `${bytes} B`;
+    if (bytes < BYTES_PER_MB) return `${(bytes / BYTES_PER_KB).toFixed(1)} KB`;
+    return `${(bytes / BYTES_PER_MB).toFixed(1)} MB`;
 }
 
 export default function AdminFiles() {
@@ -16,7 +19,7 @@ export default function AdminFiles() {
     const [chats, setChats] = useState([]);
     const fileRef = useRef(null);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const [f, u, c] = await Promise.all([
             api.get("/admin/uploads"),
             api.get("/users"),
@@ -25,8 +28,8 @@ export default function AdminFiles() {
         setItems(f.data);
         setUsers(u.data);
         setChats(c.data);
-    };
-    useEffect(() => { load(); }, []);
+    }, []);
+    useEffect(() => { load(); }, [load]);
 
     const userName = (id) => users.find((u) => u.id === id)?.name || id;
     const chatName = (id) => {

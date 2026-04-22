@@ -1,22 +1,43 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Flag, Check, Trash2 } from "lucide-react";
+
+const STATUS_LABELS = {
+    "": "ALLE",
+    pending: "OFFEN",
+    resolved_kept: "BEHALTEN",
+    resolved_deleted: "GELÖSCHT",
+};
+
+const STATUS_BADGE_CLASS = {
+    pending: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+    resolved_deleted: "border-red-500/30 bg-red-500/10 text-red-400",
+    resolved_kept: "border-zinc-700 bg-zinc-800 text-zinc-400",
+};
+
+const LOG_ACTION_CLASS = {
+    delete: "text-red-400",
+    keep: "text-zinc-300",
+};
+
+const statusBadgeClass = (status) => STATUS_BADGE_CLASS[status] || "border-zinc-700 bg-zinc-800 text-zinc-400";
+const logActionClass = (action) => LOG_ACTION_CLASS[action] || "text-cyan-400";
 
 export default function AdminReports() {
     const [reports, setReports] = useState([]);
     const [filter, setFilter] = useState("pending");
     const [log, setLog] = useState([]);
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const [r, l] = await Promise.all([
             api.get(`/admin/reports${filter ? `?status=${filter}` : ""}`),
             api.get("/admin/moderation-log"),
         ]);
         setReports(r.data);
         setLog(l.data);
-    };
-    useEffect(() => { load(); }, [filter]);
+    }, [filter]);
+    useEffect(() => { load(); }, [load]);
 
     const resolve = async (id, action) => {
         await api.post(`/admin/reports/${id}/resolve?action=${action}`);
@@ -40,7 +61,7 @@ export default function AdminReports() {
                         data-testid={`filter-${s || "all"}`}
                         className={`px-3 py-1.5 font-mono text-xs rounded-sm border transition-colors ${filter === s ? "border-cyan-500 text-cyan-400 bg-cyan-500/10" : "border-zinc-800 text-zinc-400 hover:border-zinc-600"}`}
                     >
-                        {s === "" ? "ALLE" : s === "pending" ? "OFFEN" : s === "resolved_kept" ? "BEHALTEN" : "GELÖSCHT"}
+                        {s === "" ? "ALLE" : STATUS_LABELS[s]}
                     </button>
                 ))}
             </div>
@@ -54,11 +75,7 @@ export default function AdminReports() {
                                 <div className="flex items-center gap-2 mb-1">
                                     <Flag className="w-4 h-4 text-amber-400" />
                                     <span className="font-mono text-xs text-amber-400 uppercase tracking-widest">Meldung</span>
-                                    <span className={`font-mono text-[10px] px-2 py-0.5 rounded-sm border ${
-                                        r.status === "pending" ? "border-amber-500/30 bg-amber-500/10 text-amber-400" :
-                                        r.status === "resolved_deleted" ? "border-red-500/30 bg-red-500/10 text-red-400" :
-                                        "border-zinc-700 bg-zinc-800 text-zinc-400"
-                                    }`}>{r.status.toUpperCase()}</span>
+                                    <span className={`font-mono text-[10px] px-2 py-0.5 rounded-sm border ${statusBadgeClass(r.status)}`}>{r.status.toUpperCase()}</span>
                                 </div>
                                 <div className="text-sm text-zinc-200 mb-2">
                                     <strong>Grund:</strong> {r.reason}
@@ -111,7 +128,7 @@ export default function AdminReports() {
                     {log.length === 0 && <div className="p-4 text-sm text-zinc-500">Keine Einträge</div>}
                     {log.map((l) => (
                         <div key={l.id} className="px-5 py-2 flex items-center justify-between font-mono text-xs">
-                            <span className={`${l.action === "delete" ? "text-red-400" : l.action === "keep" ? "text-zinc-300" : "text-cyan-400"}`}>
+                            <span className={logActionClass(l.action)}>
                                 {l.action.toUpperCase()}
                             </span>
                             <span className="text-zinc-500 flex-1 mx-4 truncate">{l.note}</span>
