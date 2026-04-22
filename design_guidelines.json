@@ -1,0 +1,94 @@
+{
+  "theme": "dark",
+  "archetype": "4",
+  "archetype_name": "Swiss & High-Contrast (Dark/Tech Variant)",
+  "design_philosophy": "A high-contrast, data-dense 'Control Room' aesthetic designed for a local event environment. The UI clearly delineates between the fluid, user-focused chat interface and the rigid, metrics-heavy admin backoffice. Content privacy is physically represented through 'metadata-only' visual locks and stark color coding.",
+  "colors": {
+    "background": "#09090B",
+    "surface": "#18181B",
+    "surface_elevated": "#27272A",
+    "primary": "#06B6D4",
+    "primary_hover": "#0891B2",
+    "secondary": "#27272A",
+    "accent_moderation": "#EF4444",
+    "accent_warning": "#F59E0B",
+    "text_primary": "#FAFAFA",
+    "text_secondary": "#A1A1AA",
+    "border": "#27272A"
+  },
+  "typography": {
+    "heading_font": "IBM Plex Sans",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "base_size": "16px",
+    "h1": "text-4xl tracking-tighter font-semibold",
+    "h2": "text-2xl tracking-tight font-medium",
+    "h3": "text-xl tracking-tight font-medium",
+    "body": "text-base leading-relaxed",
+    "metadata": "font-mono text-xs tracking-widest uppercase text-zinc-500",
+    "admin_badge": "font-mono text-xs tracking-widest uppercase text-amber-500 bg-amber-500/10 border border-amber-500/20 px-2 py-1 inline-flex items-center gap-1"
+  },
+  "spacing_and_layout": {
+    "philosophy": "Grid Borders (The 'Technical' Look). Strict structural layout reflecting a system terminal rather than a consumer social app.",
+    "container_padding": "p-6 md:p-8",
+    "gap_system": "gap-4 for related items, gap-8 for distinct sections",
+    "chat_layout": "grid-cols-1 md:grid-cols-[300px_1fr] lg:grid-cols-[350px_1fr] h-screen overflow-hidden",
+    "admin_layout": "grid-cols-1 md:grid-cols-[250px_1fr] lg:grid-cols-[280px_1fr] h-screen overflow-hidden gap-0 border-collapse"
+  },
+  "surface_styles": {
+    "admin_widgets": "bg-zinc-900 border border-zinc-800 rounded-none shadow-sm",
+    "chat_bubbles": {
+      "user": "bg-cyan-500/10 border border-cyan-500/20 text-zinc-100 rounded-r-xl rounded-tl-xl rounded-bl-sm p-4",
+      "other": "bg-zinc-800/50 border border-zinc-700 text-zinc-300 rounded-l-xl rounded-tr-xl rounded-br-sm p-4"
+    },
+    "inputs": "bg-zinc-900 border border-zinc-700 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-sm transition-all text-zinc-100",
+    "badges": "border border-zinc-700 bg-zinc-800 text-zinc-300 px-2 py-0.5 text-xs font-mono rounded-sm"
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-medium rounded-sm px-6 py-2 transition-colors",
+      "destructive": "bg-red-500/10 border border-red-500/20 hover:bg-red-500 hover:text-white text-red-500 rounded-sm px-4 py-2 transition-colors",
+      "outline": "border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-4 py-2 rounded-sm transition-colors"
+    },
+    "forms": "Use Shadcn customized components. Sharp edges (rounded-sm or rounded-none). No inner shadows.",
+    "tables": "Use Shadcn Table. Strict grid lines (`border-collapse`). border-b border-zinc-800 on rows, hover:bg-zinc-900/50. Text should be heavily weighted towards mono-font for numbers, IDs, and timestamps.",
+    "modals": "Shadcn Dialog. bg-zinc-950 border border-zinc-800. Glassmorphism backdrop (backdrop-blur-sm bg-black/60)."
+  },
+  "motion": {
+    "philosophy": "Instant and structural. No bouncy spring animations. Fade-ins and snappy transitions.",
+    "hover_states": "transition-colors duration-150 ease-out",
+    "chat_entrance": "opacity-0 translate-y-2 to opacity-100 translate-y-0 duration-200",
+    "page_transition": "opacity-0 to opacity-100 duration-300"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Technical, minimal strokes (1.5px weight). Avoid filled icons unless active.",
+    "install_command": "Already installed in Shadcn projects, fallback: npm i lucide-react"
+  },
+  "images": {
+    "login_background": {
+      "url": "https://images.pexels.com/photos/17323801/pexels-photo-17323801.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Server room featuring network equipment with blue illumination. Ideal for tech theme.",
+      "usage": "Use as a full-screen background with a heavy dark overlay (bg-zinc-950/85) behind the login card."
+    },
+    "event_empty_state": {
+      "url": "https://images.pexels.com/photos/1714361/pexels-photo-1714361.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Dark crowd silhouette at an event with stage lights.",
+      "usage": "Use for empty states in group chats or when no chat is selected (apply grayscale and opacity-10 filter)."
+    }
+  },
+  "accessibility": {
+    "contrast": "APCA compliant. Text on buttons minimum 4.5:1. Never use gray-on-gray for essential info.",
+    "focus_states": "focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-zinc-950",
+    "testing": "All interactive elements MUST include `data-testid` attributes (e.g., `data-testid='login-submit-button'`, `data-testid='chat-message-input'`)."
+  },
+  "specific_instructions_for_main_agent": [
+    "Tech Stack constraint: Generate React components using JavaScript (.jsx/.js files), not TypeScript.",
+    "Dual-Mode Strategy: Use distinct layouts for user vs admin. The Admin Dashboard MUST look like a 'Control Room' - heavy use of data tables, mono fonts, and grid lines.",
+    "Admin Privacy Requirement: Admins cannot read chats. Replace message bodies in the moderation/admin view with `<span className='font-mono text-amber-500 bg-amber-500/10 px-1 border border-amber-500/20'>[NUR METADATEN]</span>`.",
+    "Localization: All hardcoded UI text MUST be in German (e.g., 'Nachricht senden', 'Nutzerverwaltung', 'Abmelden', 'Chat ausblenden').",
+    "Chat Polling: Since HTTP-Polling is requested, ensure the UI reflects 'Synchronisieren...' subtly, perhaps an indicator dot that pulses cyan when fetching.",
+    "Testing: Add data-testid attributes universally to interactive elements to prevent test failures during UI refactoring.",
+    "No default Vercel/Stripe generic look. Strictly enforce the JetBlack/Cyan 'Terminal' high-contrast aesthetic."
+  ]
+}
