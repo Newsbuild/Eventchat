@@ -1,0 +1,48 @@
+{
+  "summary": "Backend-only regression tests for Lokaler Event-Chat. 15 pytest cases covering auth (login/logout/me), users CRUD (admin-only, self-delete guard), direct/group chats (idempotency, hide/unhide, membership-gated detail + messages), group admin actions (add/remove members, rename, promote/demote), uploads (member/admin access), reports + moderation (keep/delete + log), admin privacy (non-admin 403, /admin/chats returns metadata only — no message text), admin manual upload + soft-delete, profile update. All 15 tests PASS after one backend fix.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/chats/group (and any endpoint returning a dict just passed to db.insert_one)", "issue": "500 ValueError: 'ObjectId' object is not iterable. motor's insert_one mutates the Python dict adding `_id: ObjectId`. enrich_chat did `dict(chat)` which preserved _id and FastAPI failed to JSON-encode it. Fixed by excluding `_id` inside enrich_chat.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/users (POST)", "issue": "Email is silently lower-cased on create but this is not documented; clients comparing to original casing will mismatch."},
+      {"endpoint": "/api/auth/logout", "issue": "Requires authentication (Depends(get_current_user)); an expired session cannot log out cleanly — a 401 is returned instead of clearing cookies. Consider making logout tolerant to missing/expired tokens."},
+      {"endpoint": "/api/admin/reports/{id}/resolve", "issue": "`action` is a required query string but there is no validation — any value other than 'delete' is treated as 'keep'. Recommend enum validation (Literal['delete','keep'])."},
+      {"endpoint": "/api/uploads (POST)", "issue": "Non-member returns 404 (as spec) but same 404 is used for 'chat does not exist' — ambiguous; still matches spec."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_event_chat_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Privacy rule verified: /api/admin/chats does NOT leak message text (only id, type, name, member_count, member_ids, message_count, last_message_at, created_at). Keep this contract.",
+    "Consider validating `action` param on /api/admin/reports/{id}/resolve via typing.Literal.",
+    "Consider making /api/auth/logout tolerant of missing/expired tokens (currently requires get_current_user).",
+    "Document that emails are normalized to lowercase on create/login."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~750 lines - single file is fine for MVP but consider splitting into routers (auth, chats, groups, uploads, admin) before it grows.",
+    "CORS is configured with allow_origins=['*'] AND allow_credentials=True AND allow_origin_regex='.*'. Browsers reject credentialed requests with wildcard origin; this likely works only because the regex matches the preview domain. For production, set an explicit origin list from env (CORS_ORIGINS is defined but unused).",
+    "JWT_SECRET is committed to /app/backend/.env. Acceptable for dev, must be rotated for production.",
+    "No brute-force protection / login lockout (spec asked for 5-attempt lockout per auth_testing.md). Currently unlimited retries on /api/auth/login.",
+    "seed_admin is idempotent and re-hashes password if mismatch (good, matches playbook).",
+    "db.insert_one mutates dict with ObjectId - I patched enrich_chat; audit every other code path that returns the just-inserted dict. Current callers already use dict-comp filters except enrich_chat. OK after fix.",
+    "/api/auth/logout requires a valid access token; should be idempotent (clear cookies even on 401).",
+    "No refresh token endpoint implemented — once access_token expires after 12h the refresh_token in cookie is useless.",
+    "No rate-limiting on /api/uploads; could be abused to fill disk.",
+    "bcrypt hash format starts with $2b$ - verified via login success."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (enrich_chat now strips `_id`)",
+    "/app/backend/tests/test_event_chat_api.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15 after fix)", "frontend": "not tested"},
+  "test_credentials": "admin@event.local/admin123, anna|ben|clara@event.local/demo123",
+  "seed_data_creation": "Tests create temp groups prefixed TEST_ and temp users test_<uuid>@event.local. Temp users deleted in test_user_crud_admin_only; TEST_ groups persist across runs (idempotent names with random suffix prevent collisions).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 15 backend tests green. Re-run with: pytest /app/backend/tests/test_event_chat_api.py -v. Admin privacy invariant (no message text in /api/admin/chats) is explicitly asserted. A minor server.py patch in enrich_chat is in place; if main agent refactors this, keep the _id exclusion.",
+  "rca_of_the_issue": "POST /api/chats/group returned HTTP 500. RCA: motor's insert_one mutates the passed-in dict by setting `_id` to an ObjectId. `enrich_chat(chat,...)` then did `c = dict(chat)` preserving that ObjectId, which FastAPI's jsonable_encoder cannot serialize. Reproduction: login as anna, POST /api/chats/group {name, member_ids} -> 500. Mitigation applied: `enrich_chat` now builds c as `{k:v for k,v in chat.items() if k != '_id'}`. Re-test confirmed fix."
+}
