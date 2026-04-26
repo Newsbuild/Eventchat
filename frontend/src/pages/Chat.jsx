@@ -4,8 +4,12 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import {
+    playMessageBeep, ensureNotificationPermission,
+    showDesktopNotification, setTabUnreadCount,
+} from "@/lib/notify";
+import {
     MessageSquare, Users, Plus, LogOut, Send, Paperclip, Flag,
-    EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2
+    EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2, Bell, BellRing,
 } from "lucide-react";
 
 const SECONDS_PER_MINUTE = 60;
@@ -52,18 +56,67 @@ export default function ChatPage() {
     const fileInputRef = useRef(null);
     const messagesEndRef = useRef(null);
     const listRef = useRef(null);
+    // last_message.id seen per chat — used to detect *new* messages on poll
+    const lastSeenMsgIdsRef = useRef({});
+    const isFirstLoadRef = useRef(true);
+    const chatIdRef = useRef(chatId);
+    useEffect(() => { chatIdRef.current = chatId; }, [chatId]);
+
+    const [notifPermission, setNotifPermission] = useState(
+        typeof Notification !== "undefined" ? Notification.permission : "denied"
+    );
+
+    const markRead = useCallback(async (id) => {
+        try { await api.post(`/chats/${id}/read`); } catch (err) { console.error("mark read failed", err); }
+    }, []);
 
     const loadChats = useCallback(async () => {
         setPolling(true);
         try {
             const [chatsRes, usersRes] = await Promise.all([api.get("/chats"), api.get("/users")]);
-            setChats(chatsRes.data);
+            const newChats = chatsRes.data;
+
+            // Detect new incoming messages (skip first ever load)
+            if (!isFirstLoadRef.current) {
+                const tabHidden = typeof document !== "undefined" && document.hidden;
+                for (const c of newChats) {
+                    const lastMsg = c.last_message;
+                    if (!lastMsg) continue;
+                    const prevId = lastSeenMsgIdsRef.current[c.id];
+                    const isNew = prevId !== undefined && prevId !== lastMsg.id;
+                    const fromOther = lastMsg.sender_id && lastMsg.sender_id !== user?.id;
+                    const notSystem = lastMsg.type !== "system";
+                    const isActiveChat = c.id === chatIdRef.current && !tabHidden;
+
+                    if (isNew && fromOther && notSystem && !isActiveChat) {
+                        playMessageBeep();
+                        if (tabHidden) {
+                            const senderName = lastMsg.sender_name || "Neue Nachricht";
+                            const title = c.type === "group"
+                                ? `${senderName} in ${c.display_name}`
+                                : senderName;
+                            showDesktopNotification(title, lastMsg.text || "(Anhang)", () => {
+                                window.location.hash = "";
+                                window.history.pushState({}, "", `/chat/${c.id}`);
+                                window.dispatchEvent(new PopStateEvent("popstate"));
+                            });
+                        }
+                    }
+                }
+            }
+            // Update seen-ids snapshot
+            const snap = {};
+            for (const c of newChats) snap[c.id] = c.last_message?.id;
+            lastSeenMsgIdsRef.current = snap;
+            isFirstLoadRef.current = false;
+
+            setChats(newChats);
             setAllUsers(usersRes.data);
         } catch (err) {
             console.error("Failed to load chats:", err);
         }
         finally { setTimeout(() => setPolling(false), 300); }
-    }, []);
+    }, [user?.id]);
 
     const loadChat = useCallback(async (id) => {
         if (!id) return;
@@ -74,11 +127,20 @@ export default function ChatPage() {
             ]);
             setSelectedChat(chatRes.data);
             setMessages(msgRes.data);
+            // Mark as read whenever the active chat is loaded
+            markRead(id);
         } catch (err) {
             console.error("Failed to load chat:", err);
             toast.error("Chat konnte nicht geladen werden");
         }
-    }, []);
+    }, [markRead]);
+
+    // Update tab title based on total unread
+    useEffect(() => {
+        const total = chats.reduce((s, c) => s + (c.unread_count || 0), 0);
+        setTabUnreadCount(total);
+        return () => setTabUnreadCount(0);
+    }, [chats]);
 
     useEffect(() => { loadChats(); }, [loadChats]);
     useEffect(() => { if (chatId) loadChat(chatId); else setSelectedChat(null); }, [chatId, loadChat]);
@@ -173,6 +235,28 @@ export default function ChatPage() {
                         </div>
                     </div>
                     <div className="flex items-center gap-1">
+                        <button
+                            onClick={async () => {
+                                if (notifPermission !== "granted") {
+                                    const ok = await ensureNotificationPermission();
+                                    setNotifPermission(ok ? "granted" : (Notification.permission || "denied"));
+                                    if (ok) {
+                                        toast.success("Benachrichtigungen aktiviert");
+                                    } else if (Notification.permission === "denied") {
+                                        toast.error("Benachrichtigungen vom Browser blockiert");
+                                    }
+                                } else {
+                                    toast.info("Benachrichtigungen aktiv (Steuerung im Browser)");
+                                }
+                            }}
+                            data-testid="toggle-notifications-button"
+                            title={notifPermission === "granted" ? "Benachrichtigungen aktiv" : "Benachrichtigungen einschalten"}
+                            className={`p-2 hover:bg-zinc-900 rounded-sm transition-colors ${
+                                notifPermission === "granted" ? "text-cyan-400" : "text-zinc-400 hover:text-cyan-400"
+                            }`}
+                        >
+                            {notifPermission === "granted" ? <BellRing className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+                        </button>
                         {user?.role === "admin" && (
                             <button
                                 onClick={() => navigate("/admin")}
@@ -244,14 +328,24 @@ export default function ChatPage() {
                             key={c.id}
                             onClick={() => navigate(`/chat/${c.id}`)}
                             data-testid={`chat-item-${c.id}`}
-                            className={`group cursor-pointer border-b border-zinc-900 px-4 py-3 hover:bg-zinc-900/60 transition-colors ${chatId === c.id ? "bg-zinc-900 border-l-2 border-l-cyan-500" : ""}`}
+                            className={`group cursor-pointer border-b border-zinc-900 px-4 py-3 hover:bg-zinc-900/60 transition-colors ${chatId === c.id ? "bg-zinc-900 border-l-2 border-l-cyan-500" : ""} ${c.unread_count > 0 ? "bg-zinc-900/40" : ""}`}
                         >
                             <div className="flex items-start justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
                                     {c.type === "group"
-                                        ? <Hash className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
-                                        : <User2 className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0" />}
-                                    <span className="text-sm font-medium text-zinc-100 truncate">{c.display_name}</span>
+                                        ? <Hash className={`w-3.5 h-3.5 flex-shrink-0 ${c.unread_count > 0 ? "text-cyan-300" : "text-cyan-400"}`} />
+                                        : <User2 className={`w-3.5 h-3.5 flex-shrink-0 ${c.unread_count > 0 ? "text-zinc-200" : "text-zinc-500"}`} />}
+                                    <span className={`text-sm truncate ${c.unread_count > 0 ? "font-semibold text-zinc-50" : "font-medium text-zinc-100"}`}>
+                                        {c.display_name}
+                                    </span>
+                                    {c.unread_count > 0 && (
+                                        <span
+                                            data-testid={`unread-badge-${c.id}`}
+                                            className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 bg-cyan-500 text-zinc-950 font-mono text-[10px] font-bold rounded-full"
+                                        >
+                                            {c.unread_count > 99 ? "99+" : c.unread_count}
+                                        </span>
+                                    )}
                                 </div>
                                 <button
                                     onClick={(e) => { e.stopPropagation(); hideChat(c.id); }}
@@ -263,10 +357,8 @@ export default function ChatPage() {
                                 </button>
                             </div>
                             <div className="mt-1 flex items-center justify-between">
-                                <span className="text-xs text-zinc-500 truncate max-w-[220px]">
-                                    {c.last_message?.deleted ? <em className="text-zinc-600">(gelöscht)</em> :
-                                        c.last_message?.type === "system" ? <em className="text-zinc-600">{c.last_message.text}</em> :
-                                        (c.last_message?.text || "Keine Nachrichten")}
+                                <span className={`text-xs truncate max-w-[220px] ${c.unread_count > 0 ? "text-zinc-300" : "text-zinc-500"}`}>
+                                    {renderLastMessagePreview(c.last_message)}
                                 </span>
                                 <span className="font-mono text-[10px] text-zinc-600 flex-shrink-0">
                                     {relTime(c.last_message?.created_at || c.created_at)}

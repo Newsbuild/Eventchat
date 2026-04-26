@@ -275,8 +275,25 @@ async def enrich_chat(chat: dict, user_id: str) -> dict:
         {"chat_id": c["id"], "deleted": {"$ne": True}},
         sort=[("created_at", -1)], projection={"_id": 0}
     )
+    if last and last.get("sender_id"):
+        sender = await db.users.find_one({"id": last["sender_id"]}, {"_id": 0, "name": 1})
+        last["sender_name"] = sender["name"] if sender else None
     c["last_message"] = last
     c["message_count"] = await db.messages.count_documents({"chat_id": c["id"]})
+
+    # unread count: messages newer than last_read, not from current user, not deleted
+    read_doc = await db.chat_reads.find_one(
+        {"user_id": user_id, "chat_id": c["id"]}, {"_id": 0}
+    )
+    last_read_at = read_doc["last_read_at"] if read_doc else "1970-01-01T00:00:00+00:00"
+    c["unread_count"] = await db.messages.count_documents({
+        "chat_id": c["id"],
+        "created_at": {"$gt": last_read_at},
+        "sender_id": {"$ne": user_id},
+        "deleted": {"$ne": True},
+        "type": {"$ne": "system"},
+    })
+    c["last_read_at"] = last_read_at
     return c
 
 
@@ -342,6 +359,20 @@ async def hide_chat(chat_id: str, user: dict = Depends(get_current_user)):
         upsert=True,
     )
     return {"ok": True}
+
+
+@api.post("/chats/{chat_id}/read")
+async def mark_chat_read(chat_id: str, user: dict = Depends(get_current_user)):
+    chat = await db.chats.find_one({"id": chat_id}, {"_id": 0})
+    if not chat or user["id"] not in chat["member_ids"]:
+        raise HTTPException(404, "Chat nicht gefunden")
+    ts = now_iso()
+    await db.chat_reads.update_one(
+        {"user_id": user["id"], "chat_id": chat_id},
+        {"$set": {"user_id": user["id"], "chat_id": chat_id, "last_read_at": ts}},
+        upsert=True,
+    )
+    return {"ok": True, "last_read_at": ts}
 
 
 @api.get("/chats/{chat_id}")
@@ -713,6 +744,7 @@ async def startup():
     await db.messages.create_index("id", unique=True)
     await db.uploads.create_index("id", unique=True)
     await db.reports.create_index("status")
+    await db.chat_reads.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
 
     # seed admin
     admin = await db.users.find_one({"email": ADMIN_EMAIL.lower()}, {"_id": 0})
