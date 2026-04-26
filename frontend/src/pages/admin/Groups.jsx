@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, X, Shield } from "lucide-react";
+import { Plus, X, Shield, Edit2, Archive, ArchiveRestore } from "lucide-react";
 
 export default function AdminGroups() {
     const [groups, setGroups] = useState([]);
     const [users, setUsers] = useState([]);
     const [expanded, setExpanded] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
+    const [editGroup, setEditGroup] = useState(null);
 
     const load = useCallback(async () => {
         const [g, u] = await Promise.all([api.get("/admin/groups"), api.get("/users")]);
@@ -19,13 +20,30 @@ export default function AdminGroups() {
 
     const userById = (id) => users.find((u) => u.id === id);
 
+    const archive = async (g) => {
+        if (!window.confirm(`Gruppe "${g.name}" archivieren? Nutzer sehen die Gruppe nicht mehr — Nachrichten bleiben auf dem Server.`)) return;
+        try {
+            await api.post(`/admin/groups/${g.id}/archive`);
+            toast.success("Gruppe archiviert");
+            load();
+        } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    };
+
+    const unarchive = async (g) => {
+        try {
+            await api.post(`/admin/groups/${g.id}/unarchive`);
+            toast.success("Gruppe reaktiviert");
+            load();
+        } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    };
+
     return (
         <div className="p-8">
             <div className="flex items-center justify-between mb-8">
                 <div>
                     <div className="font-mono text-[10px] tracking-[0.3em] text-zinc-500 uppercase">/ Verwaltung</div>
                     <h1 className="text-3xl tracking-tighter font-semibold mt-1">Gruppen &amp; Zuordnungen</h1>
-                    <p className="text-sm text-zinc-500 mt-1">Wer ist in welcher Gruppe. Nur Metadaten — keine Nachrichten.</p>
+                    <p className="text-sm text-zinc-500 mt-1">Erstellen, bearbeiten und archivieren. Nur Metadaten — keine Nachrichten.</p>
                 </div>
                 <button
                     onClick={() => setShowCreate(true)}
@@ -38,24 +56,56 @@ export default function AdminGroups() {
 
             <div className="space-y-3" data-testid="groups-list">
                 {groups.map((g) => (
-                    <div key={g.id} className="bg-zinc-900 border border-zinc-800">
+                    <div key={g.id} className={`bg-zinc-900 border ${g.archived ? "border-zinc-800 opacity-60" : "border-zinc-800"}`}>
                         <div
                             className="flex items-center justify-between px-5 py-3 cursor-pointer hover:bg-zinc-900/60"
                             onClick={() => setExpanded(expanded === g.id ? null : g.id)}
                             data-testid={`group-${g.id}`}
                         >
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 flex-wrap">
                                 <span className="font-mono text-xs text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-sm">GRUPPE</span>
-                                <span className="font-medium text-zinc-100">{g.name}</span>
+                                <span className={`font-medium ${g.archived ? "text-zinc-400 line-through" : "text-zinc-100"}`}>{g.name}</span>
                                 {g.created_by_admin && (
                                     <span className="font-mono text-[10px] text-amber-400 border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 rounded-sm uppercase tracking-widest">
                                         Admin-erstellt
                                     </span>
                                 )}
+                                {g.archived && (
+                                    <span className="font-mono text-[10px] text-red-400 border border-red-500/30 bg-red-500/10 px-2 py-0.5 rounded-sm uppercase tracking-widest">
+                                        Archiviert
+                                    </span>
+                                )}
                             </div>
-                            <div className="flex items-center gap-4 text-xs font-mono text-zinc-500">
-                                <span>{g.member_ids.length} Mitgl.</span>
-                                <span>{new Date(g.created_at).toLocaleDateString("de-DE")}</span>
+                            <div className="flex items-center gap-1">
+                                <span className="text-xs font-mono text-zinc-500 mr-3">{g.member_ids.length} Mitgl.</span>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setEditGroup(g); }}
+                                    data-testid={`edit-group-${g.id}`}
+                                    title="Bearbeiten"
+                                    disabled={g.archived}
+                                    className="p-2 hover:bg-zinc-800 rounded-sm text-zinc-400 hover:text-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    <Edit2 className="w-4 h-4" />
+                                </button>
+                                {g.archived ? (
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); unarchive(g); }}
+                                        data-testid={`unarchive-group-${g.id}`}
+                                        title="Reaktivieren"
+                                        className="p-2 hover:bg-zinc-800 rounded-sm text-zinc-400 hover:text-emerald-400 transition-colors"
+                                    >
+                                        <ArchiveRestore className="w-4 h-4" />
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); archive(g); }}
+                                        data-testid={`archive-group-${g.id}`}
+                                        title="Archivieren (Nutzer sehen Gruppe nicht mehr)"
+                                        className="p-2 hover:bg-zinc-800 rounded-sm text-zinc-400 hover:text-red-400 transition-colors"
+                                    >
+                                        <Archive className="w-4 h-4" />
+                                    </button>
+                                )}
                             </div>
                         </div>
                         {expanded === g.id && (
@@ -85,26 +135,35 @@ export default function AdminGroups() {
             </div>
 
             {showCreate && (
-                <AdminCreateGroupModal
+                <GroupFormModal
+                    mode="create"
                     users={users}
                     onClose={() => setShowCreate(false)}
-                    onCreated={() => { setShowCreate(false); load(); }}
+                    onSaved={() => { setShowCreate(false); load(); }}
+                />
+            )}
+            {editGroup && (
+                <GroupFormModal
+                    mode="edit"
+                    group={editGroup}
+                    users={users}
+                    onClose={() => setEditGroup(null)}
+                    onSaved={() => { setEditGroup(null); load(); }}
                 />
             )}
         </div>
     );
 }
 
-function AdminCreateGroupModal({ users, onClose, onCreated }) {
-    const [name, setName] = useState("");
-    const [memberIds, setMemberIds] = useState([]);
-    const [adminIds, setAdminIds] = useState([]);
+function GroupFormModal({ mode, group, users, onClose, onSaved }) {
+    const [name, setName] = useState(group?.name || "");
+    const [memberIds, setMemberIds] = useState(group?.member_ids || []);
+    const [adminIds, setAdminIds] = useState(group?.admin_ids || []);
     const [saving, setSaving] = useState(false);
 
     const toggleMember = (id) => {
         setMemberIds((s) => {
             const next = s.includes(id) ? s.filter((x) => x !== id) : [...s, id];
-            // if user was group-admin but removed as member, also remove as group-admin
             setAdminIds((a) => a.filter((x) => next.includes(x)));
             return next;
         });
@@ -119,9 +178,16 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
         if (memberIds.length === 0) { toast.error("Mindestens ein Mitglied auswählen"); return; }
         setSaving(true);
         try {
-            await api.post("/admin/groups", { name, member_ids: memberIds, admin_ids: adminIds });
-            toast.success("Gruppe erstellt");
-            onCreated();
+            if (mode === "create") {
+                await api.post("/admin/groups", { name, member_ids: memberIds, admin_ids: adminIds });
+                toast.success("Gruppe erstellt");
+            } else {
+                await api.patch(`/admin/groups/${group.id}`, {
+                    name, member_ids: memberIds, admin_ids: adminIds,
+                });
+                toast.success("Gruppe aktualisiert");
+            }
+            onSaved();
         } catch (err) {
             toast.error(formatApiErrorDetail(err.response?.data?.detail));
         } finally {
@@ -129,15 +195,18 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
         }
     };
 
+    const isEdit = mode === "edit";
+    const title = isEdit ? "Gruppe bearbeiten" : "Neue Gruppe erstellen";
+
     return (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4" data-testid="admin-create-group-modal">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4" data-testid="group-form-modal">
             <div className="w-full max-w-lg bg-zinc-950 border border-zinc-800 rounded-sm max-h-[90vh] flex flex-col">
                 <div className="flex items-center justify-between p-4 border-b border-zinc-800">
                     <div>
                         <div className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase">/ Admin-Aktion</div>
-                        <h3 className="font-medium text-zinc-100 mt-0.5">Neue Gruppe erstellen</h3>
+                        <h3 className="font-medium text-zinc-100 mt-0.5">{title}</h3>
                     </div>
-                    <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200" data-testid="close-admin-create-group"><X className="w-4 h-4" /></button>
+                    <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200" data-testid="close-group-form"><X className="w-4 h-4" /></button>
                 </div>
 
                 <div className="p-4 space-y-4 overflow-y-auto">
@@ -146,7 +215,7 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
                         <input
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            data-testid="admin-group-name-input"
+                            data-testid="group-form-name-input"
                             placeholder="z.B. Crew, VIP-Gäste, Team-Event"
                             className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 focus:border-cyan-500 outline-none rounded-sm text-sm text-zinc-100"
                         />
@@ -166,13 +235,13 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
                                     <div
                                         key={u.id}
                                         className="flex items-center gap-3 p-2 border-b border-zinc-900 last:border-0 hover:bg-zinc-900/60"
-                                        data-testid={`admin-group-user-row-${u.id}`}
+                                        data-testid={`group-form-user-row-${u.id}`}
                                     >
                                         <input
                                             type="checkbox"
                                             checked={isMember}
                                             onChange={() => toggleMember(u.id)}
-                                            data-testid={`admin-group-member-${u.id}`}
+                                            data-testid={`group-form-member-${u.id}`}
                                             className="accent-cyan-500"
                                         />
                                         <div className="flex-1 min-w-0">
@@ -186,7 +255,7 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
                                             type="button"
                                             onClick={() => isMember && toggleAdmin(u.id)}
                                             disabled={!isMember}
-                                            data-testid={`admin-group-admin-${u.id}`}
+                                            data-testid={`group-form-admin-${u.id}`}
                                             title={isMember ? "Als Gruppen-Admin setzen" : "Erst als Mitglied hinzufügen"}
                                             className={`flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest px-2 py-1 rounded-sm border transition-colors ${
                                                 isGroupAdmin
@@ -203,7 +272,9 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
                     </div>
 
                     <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs p-3 rounded-sm font-mono leading-relaxed">
-                        Hinweis: Sie selbst werden <strong>nicht</strong> Mitglied dieser Gruppe. Gruppen-Admins können anschließend Mitglieder hinzufügen/entfernen und den Namen ändern.
+                        {isEdit
+                            ? "Hinweis: Änderungen werden im Chat als System-Nachrichten protokolliert (Mitglied hinzugefügt/entfernt, umbenannt)."
+                            : "Hinweis: Sie selbst werden nicht Mitglied dieser Gruppe."}
                     </div>
                 </div>
 
@@ -217,11 +288,10 @@ function AdminCreateGroupModal({ users, onClose, onCreated }) {
                     <button
                         onClick={submit}
                         disabled={saving || !name.trim() || memberIds.length === 0}
-                        data-testid="admin-submit-create-group"
+                        data-testid="group-form-submit"
                         className="flex items-center gap-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-zinc-950 font-medium rounded-sm text-sm transition-colors"
                     >
-                        <Plus className="w-4 h-4" />
-                        {saving ? "Erstellt…" : "Gruppe erstellen"}
+                        {saving ? "Speichert…" : (isEdit ? "Speichern" : "Erstellen")}
                     </button>
                 </div>
             </div>

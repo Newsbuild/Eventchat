@@ -171,6 +171,12 @@ class AdminCreateGroupIn(BaseModel):
     admin_ids: List[str] = []
 
 
+class AdminEditGroupIn(BaseModel):
+    name: Optional[str] = None
+    member_ids: Optional[List[str]] = None
+    admin_ids: Optional[List[str]] = None
+
+
 # ---------- Auth ----------
 @api.post("/auth/login")
 async def login(data: LoginIn, response: Response):
@@ -301,7 +307,9 @@ async def enrich_chat(chat: dict, user_id: str) -> dict:
 async def list_my_chats(user: dict = Depends(get_current_user)):
     hidden = await db.hidden_chats.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
     hidden_ids = {h["chat_id"] for h in hidden}
-    chats = await db.chats.find({"member_ids": user["id"]}, {"_id": 0}).to_list(1000)
+    chats = await db.chats.find(
+        {"member_ids": user["id"], "archived": {"$ne": True}}, {"_id": 0}
+    ).to_list(1000)
     chats = [c for c in chats if c["id"] not in hidden_ids]
     result = [await enrich_chat(c, user["id"]) for c in chats]
     result.sort(key=lambda c: (c.get("last_message") or {}).get("created_at", c["created_at"]), reverse=True)
@@ -392,7 +400,7 @@ async def get_chat(chat_id: str, user: dict = Depends(get_current_user)):
 async def list_messages(chat_id: str, limit: int = 50, before: Optional[str] = None,
                         user: dict = Depends(get_current_user)):
     chat = await db.chats.find_one({"id": chat_id}, {"_id": 0})
-    if not chat or user["id"] not in chat["member_ids"]:
+    if not chat or user["id"] not in chat["member_ids"] or chat.get("archived"):
         raise HTTPException(404, "Chat nicht gefunden")
     q = {"chat_id": chat_id}
     if before:
@@ -405,7 +413,7 @@ async def list_messages(chat_id: str, limit: int = 50, before: Optional[str] = N
 @api.post("/chats/{chat_id}/messages")
 async def send_message(chat_id: str, data: SendMessageIn, user: dict = Depends(get_current_user)):
     chat = await db.chats.find_one({"id": chat_id}, {"_id": 0})
-    if not chat or user["id"] not in chat["member_ids"]:
+    if not chat or user["id"] not in chat["member_ids"] or chat.get("archived"):
         raise HTTPException(404, "Chat nicht gefunden")
     if not (data.text or data.upload_id):
         raise HTTPException(400, "Nachricht leer")
@@ -627,6 +635,109 @@ async def admin_create_group(data: AdminCreateGroupIn, admin: dict = Depends(req
         "actor_id": admin["id"], "note": data.name, "created_at": now_iso(),
     })
     return {k: v for k, v in chat.items() if k != "_id"}
+
+
+@api.patch("/admin/groups/{chat_id}")
+async def admin_edit_group(chat_id: str, data: AdminEditGroupIn,
+                           admin: dict = Depends(require_admin)):
+    chat = await db.chats.find_one({"id": chat_id, "type": "group"}, {"_id": 0})
+    if not chat:
+        raise HTTPException(404, "Gruppe nicht gefunden")
+
+    upd = {}
+    system_messages = []
+
+    if data.name is not None and data.name.strip() and data.name != chat.get("name"):
+        upd["name"] = data.name.strip()
+        system_messages.append(f"Gruppe umbenannt zu '{data.name.strip()}' (Admin)")
+
+    if data.member_ids is not None:
+        new_members = list(set(data.member_ids))
+        if not new_members:
+            raise HTTPException(400, "Mindestens ein Mitglied erforderlich")
+        found = await db.users.count_documents({"id": {"$in": new_members}})
+        if found != len(new_members):
+            raise HTTPException(400, "Ein oder mehrere Nutzer existieren nicht")
+        old = set(chat["member_ids"])
+        new = set(new_members)
+        added = new - old
+        removed = old - new
+        upd["member_ids"] = new_members
+        for uid in added:
+            u = await db.users.find_one({"id": uid}, {"_id": 0, "name": 1})
+            if u:
+                system_messages.append(f"{u['name']} wurde hinzugefügt (Admin)")
+        for uid in removed:
+            u = await db.users.find_one({"id": uid}, {"_id": 0, "name": 1})
+            if u:
+                system_messages.append(f"{u['name']} wurde entfernt (Admin)")
+
+    if data.admin_ids is not None:
+        member_pool = upd.get("member_ids", chat["member_ids"])
+        invalid = [a for a in data.admin_ids if a not in member_pool]
+        if invalid:
+            raise HTTPException(400, "Gruppen-Admins müssen Mitglieder sein")
+        upd["admin_ids"] = list(set(data.admin_ids))
+
+    if upd:
+        await db.chats.update_one({"id": chat_id}, {"$set": upd})
+        for text in system_messages:
+            await db.messages.insert_one({
+                "id": str(uuid.uuid4()), "chat_id": chat_id, "sender_id": None,
+                "text": text, "type": "system", "upload_id": None,
+                "deleted": False, "created_at": now_iso(),
+            })
+        await db.moderation_log.insert_one({
+            "id": str(uuid.uuid4()), "action": "edit_group", "target_id": chat_id,
+            "actor_id": admin["id"], "note": ", ".join(upd.keys()),
+            "created_at": now_iso(),
+        })
+    updated = await db.chats.find_one({"id": chat_id}, {"_id": 0})
+    return updated
+
+
+@api.post("/admin/groups/{chat_id}/archive")
+async def admin_archive_group(chat_id: str, admin: dict = Depends(require_admin)):
+    chat = await db.chats.find_one({"id": chat_id, "type": "group"}, {"_id": 0})
+    if not chat:
+        raise HTTPException(404, "Gruppe nicht gefunden")
+    if chat.get("archived"):
+        return {"ok": True, "archived": True}
+    await db.chats.update_one({"id": chat_id}, {"$set": {
+        "archived": True, "archived_at": now_iso(), "archived_by": admin["id"],
+    }})
+    await db.messages.insert_one({
+        "id": str(uuid.uuid4()), "chat_id": chat_id, "sender_id": None,
+        "text": "Gruppe wurde durch Administration archiviert",
+        "type": "system", "upload_id": None, "deleted": False,
+        "created_at": now_iso(),
+    })
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "archive_group", "target_id": chat_id,
+        "actor_id": admin["id"], "note": chat.get("name"), "created_at": now_iso(),
+    })
+    return {"ok": True, "archived": True}
+
+
+@api.post("/admin/groups/{chat_id}/unarchive")
+async def admin_unarchive_group(chat_id: str, admin: dict = Depends(require_admin)):
+    chat = await db.chats.find_one({"id": chat_id, "type": "group"}, {"_id": 0})
+    if not chat:
+        raise HTTPException(404, "Gruppe nicht gefunden")
+    if not chat.get("archived"):
+        return {"ok": True, "archived": False}
+    await db.chats.update_one({"id": chat_id}, {"$set": {"archived": False}})
+    await db.messages.insert_one({
+        "id": str(uuid.uuid4()), "chat_id": chat_id, "sender_id": None,
+        "text": "Gruppe wurde durch Administration reaktiviert",
+        "type": "system", "upload_id": None, "deleted": False,
+        "created_at": now_iso(),
+    })
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "unarchive_group", "target_id": chat_id,
+        "actor_id": admin["id"], "note": chat.get("name"), "created_at": now_iso(),
+    })
+    return {"ok": True, "archived": False}
 
 
 @api.get("/admin/uploads")
