@@ -30,8 +30,11 @@ export function playMessageBeep() {
         gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.28);
         osc.start();
         osc.stop(ctx.currentTime + 0.32);
-    } catch (e) {
-        // silently ignore — sound is best-effort
+    } catch (err) {
+        // Sound is best-effort; surface unexpected failures in dev only.
+        if (process.env.NODE_ENV !== "production") {
+            console.warn("playMessageBeep failed:", err);
+        }
     }
 }
 
@@ -42,7 +45,10 @@ export async function ensureNotificationPermission() {
     try {
         const result = await Notification.requestPermission();
         return result === "granted";
-    } catch {
+    } catch (err) {
+        if (process.env.NODE_ENV !== "production") {
+            console.warn("Notification permission request failed:", err);
+        }
         return false;
     }
 }
@@ -64,8 +70,10 @@ export function showDesktopNotification(title, body, onClick) {
             };
         }
         setTimeout(() => n.close(), 6000);
-    } catch {
-        // ignore
+    } catch (err) {
+        if (process.env.NODE_ENV !== "production") {
+            console.warn("showDesktopNotification failed:", err);
+        }
     }
 }
 
