@@ -1,12 +1,13 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-    Activity, Users, Hash, FileText, Flag, Server, LogOut, MessageSquare, Terminal, Ticket
+    Activity, Users, Hash, FileText, Flag, Server, LogOut, MessageSquare, Terminal, Ticket, Tag
 } from "lucide-react";
 
 const items = [
     { to: "/admin", end: true, icon: Activity, label: "Dashboard" },
     { to: "/admin/nutzer", icon: Users, label: "Nutzer" },
+    { to: "/admin/rollen", icon: Tag, label: "Rollen" },
     { to: "/admin/gruppen", icon: Hash, label: "Gruppen" },
     { to: "/admin/einladungen", icon: Ticket, label: "Einladungen" },
     { to: "/admin/dateien", icon: FileText, label: "Dateien" },

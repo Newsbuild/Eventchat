@@ -121,15 +121,6 @@ export default function Login() {
                             <Ticket className="w-4 h-4" /> Mit Einladungscode registrieren
                         </Link>
                     </div>
-
-                    <div className="mt-10 pt-6 border-t border-zinc-800">
-                        <div className="font-mono text-xs tracking-widest text-zinc-500 uppercase mb-2">Demo-Zugänge</div>
-                        <div className="font-mono text-xs text-zinc-400 space-y-1">
-                            <div>admin@event.local / admin123</div>
-                            <div>anna@event.local / demo123</div>
-                            <div>ben@event.local / demo123</div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>

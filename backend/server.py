@@ -32,6 +32,8 @@ SEED_DEMO = os.environ.get("SEED_DEMO", "true").lower() == "true"
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
+APP_STARTED_AT = datetime.now(timezone.utc)
+
 app = FastAPI(title="Lokaler Event-Chat")
 api = APIRouter(prefix="/api")
 
@@ -78,6 +80,8 @@ def sanitize_user(u: dict) -> dict:
         "name": u["name"],
         "role": u["role"],
         "is_customer": u.get("is_customer", False),
+        "custom_roles": u.get("custom_roles", []),
+        "avatar_upload_id": u.get("avatar_upload_id"),
         "created_at": u.get("created_at"),
         "last_seen": u.get("last_seen"),
     }
@@ -132,6 +136,13 @@ class UserUpdateIn(BaseModel):
     role: Optional[str] = None
     is_customer: Optional[bool] = None
     password: Optional[str] = None
+    custom_roles: Optional[List[str]] = None
+
+
+class CustomRoleIn(BaseModel):
+    name: str
+    color: Optional[str] = None
+    description: Optional[str] = None
 
 
 class CreateDirectIn(BaseModel):
@@ -331,6 +342,11 @@ async def update_user(user_id: str, data: UserUpdateIn, admin: dict = Depends(re
     if data.role is not None: upd["role"] = data.role
     if data.is_customer is not None: upd["is_customer"] = data.is_customer
     if data.password: upd["password_hash"] = hash_password(data.password)
+    if data.custom_roles is not None:
+        # only allow assigning roles that exist
+        existing = await db.custom_roles.find({}, {"_id": 0, "name": 1}).to_list(1000)
+        allowed = {r["name"] for r in existing}
+        upd["custom_roles"] = [r for r in data.custom_roles if r in allowed]
     if not upd:
         return {"ok": True}
     await db.users.update_one({"id": user_id}, {"$set": upd})
@@ -356,6 +372,47 @@ async def update_my_profile(data: UserUpdateIn, user: dict = Depends(get_current
     return u
 
 
+@api.post("/me/avatar")
+async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "Nur Bilder erlaubt")
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(400, "Maximal 5 MB")
+    uid = str(uuid.uuid4())
+    ext = Path(file.filename or "avatar.jpg").suffix or ".jpg"
+    stored = f"avatar-{uid}{ext}"
+    (UPLOAD_DIR / stored).write_bytes(content)
+    doc = {
+        "id": uid, "filename": file.filename or "avatar",
+        "stored_name": stored, "content_type": file.content_type,
+        "size": len(content), "uploaded_by": user["id"],
+        "chat_id": None, "is_avatar": True,
+        "created_at": now_iso(), "deleted": False,
+    }
+    await db.uploads.insert_one(doc)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"avatar_upload_id": uid}})
+    return {"upload_id": uid}
+
+
+@api.delete("/me/avatar")
+async def delete_avatar(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"id": user["id"]}, {"$unset": {"avatar_upload_id": ""}})
+    return {"ok": True}
+
+
+# Public avatar image (any authenticated user can view any avatar)
+@api.get("/avatars/{upload_id}")
+async def get_avatar(upload_id: str, user: dict = Depends(get_current_user)):
+    up = await db.uploads.find_one({"id": upload_id, "is_avatar": True, "deleted": {"$ne": True}}, {"_id": 0})
+    if not up:
+        raise HTTPException(404, "Avatar nicht gefunden")
+    path = UPLOAD_DIR / up["stored_name"]
+    if not path.exists():
+        raise HTTPException(404, "Datei fehlt")
+    return FileResponse(path, media_type=up.get("content_type") or "image/jpeg")
+
+
 # ---------- Chats ----------
 async def enrich_chat(chat: dict, user_id: str) -> dict:
     # add display name for direct chats, unread placeholders, last message meta
@@ -366,6 +423,7 @@ async def enrich_chat(chat: dict, user_id: str) -> dict:
             other = await db.users.find_one({"id": other_id}, {"_id": 0, "password_hash": 0})
             c["display_name"] = other["name"] if other else "Unbekannt"
             c["other_user_id"] = other_id
+            c["other_user_avatar"] = other.get("avatar_upload_id") if other else None
     else:
         c["display_name"] = c.get("name", "Gruppe")
     last = await db.messages.find_one(
@@ -498,6 +556,30 @@ async def list_messages(chat_id: str, limit: int = 50, before: Optional[str] = N
         q["created_at"] = {"$lt": before}
     msgs = await db.messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
     msgs.reverse()
+
+    # Compute read receipts: for each message, count members (excluding sender)
+    # whose last_read_at >= message.created_at
+    other_member_ids = [m for m in chat["member_ids"]]
+    reads = await db.chat_reads.find(
+        {"chat_id": chat_id, "user_id": {"$in": other_member_ids}},
+        {"_id": 0, "user_id": 1, "last_read_at": 1},
+    ).to_list(1000)
+    reads_map = {r["user_id"]: r["last_read_at"] for r in reads}
+    total_recipients = max(len(chat["member_ids"]) - 1, 0)  # excluding sender
+
+    for m in msgs:
+        if not m.get("sender_id") or m.get("type") == "system":
+            m["read_by_count"] = 0
+            m["total_recipients"] = 0
+            continue
+        recipients = [uid for uid in chat["member_ids"] if uid != m["sender_id"]]
+        cnt = 0
+        for uid in recipients:
+            lr = reads_map.get(uid)
+            if lr and lr >= m["created_at"]:
+                cnt += 1
+        m["read_by_count"] = cnt
+        m["total_recipients"] = len(recipients)
     return msgs
 
 
@@ -981,6 +1063,94 @@ async def admin_moderation_log(admin: dict = Depends(require_admin)):
     return log
 
 
+# ---------- Admin: Custom Roles ----------
+@api.get("/admin/custom-roles")
+async def admin_list_custom_roles(admin: dict = Depends(require_admin)):
+    roles = await db.custom_roles.find({}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    for r in roles:
+        r["assigned_count"] = await db.users.count_documents({"custom_roles": r["name"]})
+    return roles
+
+
+@api.get("/custom-roles")
+async def list_custom_roles(user: dict = Depends(get_current_user)):
+    roles = await db.custom_roles.find({}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return roles
+
+
+@api.post("/admin/custom-roles")
+async def admin_create_custom_role(data: CustomRoleIn, admin: dict = Depends(require_admin)):
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(400, "Name erforderlich")
+    if await db.custom_roles.find_one({"name": name}):
+        raise HTTPException(400, "Rolle existiert bereits")
+    doc = {
+        "id": str(uuid.uuid4()), "name": name,
+        "color": (data.color or "#06B6D4").strip(),
+        "description": (data.description or "").strip(),
+        "created_at": now_iso(), "created_by": admin["id"],
+    }
+    await db.custom_roles.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/admin/custom-roles/{role_id}")
+async def admin_delete_custom_role(role_id: str, admin: dict = Depends(require_admin)):
+    role = await db.custom_roles.find_one({"id": role_id}, {"_id": 0})
+    if not role:
+        raise HTTPException(404, "Nicht gefunden")
+    await db.custom_roles.delete_one({"id": role_id})
+    # remove from all users
+    await db.users.update_many({}, {"$pull": {"custom_roles": role["name"]}})
+    return {"ok": True}
+
+
+# ---------- Admin: Health / Server Status ----------
+@api.get("/admin/health")
+async def admin_health(admin: dict = Depends(require_admin)):
+    start = datetime.now(timezone.utc)
+    db_ok = False
+    db_latency_ms = None
+    try:
+        t0 = datetime.now(timezone.utc)
+        await client.admin.command("ping")
+        db_ok = True
+        db_latency_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+    except Exception as e:
+        logger.error(f"DB ping failed: {e}")
+    # storage estimate for uploads dir
+    total_size = 0
+    file_count = 0
+    try:
+        for p in UPLOAD_DIR.iterdir():
+            if p.is_file():
+                total_size += p.stat().st_size
+                file_count += 1
+    except Exception:
+        pass
+    uptime_s = (datetime.now(timezone.utc) - APP_STARTED_AT).total_seconds()
+    return {
+        "backend": {"status": "ok", "uptime_seconds": int(uptime_s)},
+        "database": {
+            "status": "ok" if db_ok else "down",
+            "latency_ms": round(db_latency_ms, 2) if db_latency_ms is not None else None,
+        },
+        "storage": {
+            "upload_files": file_count,
+            "upload_bytes": total_size,
+        },
+        "check_duration_ms": round((datetime.now(timezone.utc) - start).total_seconds() * 1000, 2),
+        "checked_at": now_iso(),
+    }
+
+
+# Public frontend probe (no auth) so the frontend health widget can self-check via its own origin
+@api.get("/health")
+async def public_health():
+    return {"status": "ok", "checked_at": now_iso()}
+
+
 # ---------- Router ----------
 app.include_router(api)
 
@@ -1007,6 +1177,7 @@ async def startup():
     await db.reports.create_index("status")
     await db.chat_reads.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
     await db.invite_codes.create_index("code", unique=True)
+    await db.custom_roles.create_index("name", unique=True)
 
     # seed admin
     admin = await db.users.find_one({"email": ADMIN_EMAIL.lower()}, {"_id": 0})

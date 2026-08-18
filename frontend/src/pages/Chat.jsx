@@ -7,6 +7,8 @@ import {
     playMessageBeep, ensureNotificationPermission,
     showDesktopNotification, setTabUnreadCount,
 } from "@/lib/notify";
+import { Avatar } from "@/components/app/Avatar";
+import { ReadReceipt } from "@/components/app/ReadReceipt";
 import {
     MessageSquare, Users, Plus, LogOut, Send, Paperclip, Flag,
     EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2, Bell, BellRing,
@@ -227,11 +229,14 @@ export default function ChatPage() {
             <aside className="border-r border-zinc-800 flex flex-col h-screen overflow-hidden">
                 {/* Header */}
                 <div className="p-5 border-b border-zinc-800 flex items-center justify-between">
-                    <div>
-                        <div className="font-mono text-[10px] tracking-[0.3em] text-cyan-400 uppercase">/ Event.Chat</div>
-                        <div className="text-sm font-medium mt-0.5 flex items-center gap-2">
-                            <span className={`w-1.5 h-1.5 rounded-full ${polling ? "bg-cyan-400 pulse-dot" : "bg-cyan-500/40"}`} />
-                            <span className="text-zinc-300">{user?.name}</span>
+                    <div className="flex items-center gap-3 min-w-0">
+                        <Avatar user={user} size="sm" />
+                        <div className="min-w-0">
+                            <div className="font-mono text-[10px] tracking-[0.3em] text-cyan-400 uppercase">/ Event.Chat</div>
+                            <div className="text-sm font-medium mt-0.5 flex items-center gap-2">
+                                <span className={`w-1.5 h-1.5 rounded-full ${polling ? "bg-cyan-400 pulse-dot" : "bg-cyan-500/40"}`} />
+                                <span className="text-zinc-300 truncate">{user?.name}</span>
+                            </div>
                         </div>
                     </div>
                     <div className="flex items-center gap-1">
@@ -332,9 +337,14 @@ export default function ChatPage() {
                         >
                             <div className="flex items-start justify-between gap-2">
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    {c.type === "group"
-                                        ? <Hash className={`w-3.5 h-3.5 flex-shrink-0 ${c.unread_count > 0 ? "text-cyan-300" : "text-cyan-400"}`} />
-                                        : <User2 className={`w-3.5 h-3.5 flex-shrink-0 ${c.unread_count > 0 ? "text-zinc-200" : "text-zinc-500"}`} />}
+                                    {c.type === "direct" ? (
+                                        <Avatar
+                                            user={{ name: c.display_name, avatar_upload_id: c.other_user_avatar }}
+                                            size="sm"
+                                        />
+                                    ) : (
+                                        <Hash className={`w-3.5 h-3.5 flex-shrink-0 ${c.unread_count > 0 ? "text-cyan-300" : "text-cyan-400"}`} />
+                                    )}
                                     <span className={`text-sm truncate ${c.unread_count > 0 ? "font-semibold text-zinc-50" : "font-medium text-zinc-100"}`}>
                                         {c.display_name}
                                     </span>
@@ -434,7 +444,12 @@ export default function ChatPage() {
                                 const mine = m.sender_id === user.id;
                                 const sender = selectedChat.members?.find((u) => u.id === m.sender_id);
                                 return (
-                                    <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} group fade-up`} data-testid={`message-${m.id}`}>
+                                    <div key={m.id} className={`flex items-end gap-2 ${mine ? "justify-end" : "justify-start"} group fade-up`} data-testid={`message-${m.id}`}>
+                                        {!mine && (
+                                            <div className="flex-shrink-0 mb-4">
+                                                <Avatar user={sender} size="sm" showTooltip />
+                                            </div>
+                                        )}
                                         <div className={`max-w-[70%] ${mine ? "order-2" : "order-1"}`}>
                                             {!mine && selectedChat.type === "group" && (
                                                 <div className="text-xs text-zinc-500 mb-1 px-1">{sender?.name || "Unbekannt"}</div>
@@ -461,16 +476,19 @@ export default function ChatPage() {
                                                 )}
                                                 <div className="flex items-center justify-between gap-3 mt-1">
                                                     <span className="font-mono text-[10px] text-zinc-500">{clockTime(m.created_at)}</span>
-                                                    {!mine && !m.deleted && (
-                                                        <button
-                                                            onClick={() => reportMessage(m.id)}
-                                                            data-testid={`report-${m.id}`}
-                                                            className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-amber-400 transition-opacity"
-                                                            title="Melden"
-                                                        >
-                                                            <Flag className="w-3 h-3" />
-                                                        </button>
-                                                    )}
+                                                    <div className="flex items-center gap-2">
+                                                        {!mine && !m.deleted && (
+                                                            <button
+                                                                onClick={() => reportMessage(m.id)}
+                                                                data-testid={`report-${m.id}`}
+                                                                className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-amber-400 transition-opacity"
+                                                                title="Melden"
+                                                            >
+                                                                <Flag className="w-3 h-3" />
+                                                            </button>
+                                                        )}
+                                                        <ReadReceipt message={m} own={mine} />
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>

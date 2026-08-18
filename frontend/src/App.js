@@ -18,6 +18,7 @@ import AdminFiles from "@/pages/admin/Files";
 import AdminReports from "@/pages/admin/Reports";
 import AdminSystem from "@/pages/admin/System";
 import AdminInvites from "@/pages/admin/Invites";
+import AdminCustomRoles from "@/pages/admin/CustomRoles";
 
 function RootRedirect() {
     const { user, loading } = useAuth();
@@ -43,6 +44,7 @@ function App() {
                         <Route path="/admin" element={<ProtectedRoute adminOnly><AdminLayout /></ProtectedRoute>}>
                             <Route index element={<AdminDashboard />} />
                             <Route path="nutzer" element={<AdminUsers />} />
+                            <Route path="rollen" element={<AdminCustomRoles />} />
                             <Route path="gruppen" element={<AdminGroups />} />
                             <Route path="einladungen" element={<AdminInvites />} />
                             <Route path="dateien" element={<AdminFiles />} />

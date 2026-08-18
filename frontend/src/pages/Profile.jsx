@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, UserCircle2 } from "lucide-react";
+import { ArrowLeft, Camera, Trash2 } from "lucide-react";
+import { Avatar } from "@/components/app/Avatar";
 
 export default function Profile() {
-    const { user, setUser } = useAuth();
+    const { user, setUser, refresh } = useAuth();
     const navigate = useNavigate();
     const [name, setName] = useState(user?.name || "");
     const [password, setPassword] = useState("");
     const [saving, setSaving] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    const fileRef = useRef(null);
 
     const save = async (e) => {
         e.preventDefault();
@@ -27,6 +30,35 @@ export default function Profile() {
         } finally { setSaving(false); }
     };
 
+    const uploadAvatar = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith("image/")) { toast.error("Bitte ein Bild wählen"); return; }
+        if (file.size > 5 * 1024 * 1024) { toast.error("Maximal 5 MB"); return; }
+        setUploading(true);
+        try {
+            const fd = new FormData();
+            fd.append("file", file);
+            await api.post("/me/avatar", fd, { headers: { "Content-Type": "multipart/form-data" } });
+            await refresh();
+            toast.success("Profilbild aktualisiert");
+        } catch (err) {
+            toast.error(formatApiErrorDetail(err.response?.data?.detail));
+        } finally {
+            setUploading(false);
+            e.target.value = "";
+        }
+    };
+
+    const removeAvatar = async () => {
+        if (!user?.avatar_upload_id) return;
+        try {
+            await api.delete("/me/avatar");
+            await refresh();
+            toast.success("Profilbild entfernt");
+        } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+    };
+
     return (
         <div className="min-h-screen bg-zinc-950 text-zinc-100">
             <div className="max-w-xl mx-auto p-8">
@@ -38,13 +70,32 @@ export default function Profile() {
                     <ArrowLeft className="w-4 h-4" /> Zurück
                 </button>
                 <div className="flex items-center gap-4 mb-8">
-                    <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 rounded-sm flex items-center justify-center">
-                        <UserCircle2 className="w-8 h-8 text-cyan-400" />
+                    <div className="relative">
+                        <Avatar user={user} size="xl" data-testid="profile-avatar" />
+                        <button
+                            onClick={() => fileRef.current?.click()}
+                            disabled={uploading}
+                            data-testid="upload-avatar-button"
+                            className="absolute -bottom-1 -right-1 p-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 rounded-full border-2 border-zinc-950 disabled:opacity-50"
+                            title="Profilbild ändern"
+                        >
+                            <Camera className="w-3.5 h-3.5" />
+                        </button>
+                        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={uploadAvatar} data-testid="avatar-file-input" />
                     </div>
                     <div>
                         <div className="font-mono text-[10px] tracking-[0.3em] text-zinc-500 uppercase">/ Profil</div>
                         <h1 className="text-2xl font-semibold tracking-tight">{user?.name}</h1>
                         <div className="font-mono text-xs text-zinc-500">{user?.email}</div>
+                        {user?.avatar_upload_id && (
+                            <button
+                                onClick={removeAvatar}
+                                data-testid="remove-avatar-button"
+                                className="mt-2 inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-red-400"
+                            >
+                                <Trash2 className="w-3 h-3" /> Bild entfernen
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -71,8 +122,13 @@ export default function Profile() {
                     </div>
                     <div>
                         <div className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase mb-2">Rolle</div>
-                        <span className="font-mono text-xs border border-zinc-800 bg-zinc-900 px-2 py-1 rounded-sm text-zinc-300">{user?.role?.toUpperCase()}</span>
-                        {user?.is_customer && <span className="ml-2 font-mono text-xs border border-amber-500/30 bg-amber-500/10 text-amber-400 px-2 py-1 rounded-sm">KUNDE</span>}
+                        <div className="flex flex-wrap gap-2">
+                            <span className="font-mono text-xs border border-zinc-800 bg-zinc-900 px-2 py-1 rounded-sm text-zinc-300">{user?.role?.toUpperCase()}</span>
+                            {user?.is_customer && <span className="font-mono text-xs border border-amber-500/30 bg-amber-500/10 text-amber-400 px-2 py-1 rounded-sm">KUNDE</span>}
+                            {(user?.custom_roles || []).map((r) => (
+                                <span key={r} className="font-mono text-xs border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 px-2 py-1 rounded-sm">{r}</span>
+                            ))}
+                        </div>
                     </div>
                     <button
                         type="submit"
