@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-    Activity, Users, Hash, FileText, Flag, Server, LogOut, MessageSquare, Terminal, Ticket, Tag
+    Activity, Users, Hash, FileText, Flag, Server, LogOut, MessageSquare, Terminal, Ticket, Tag, Mail
 } from "lucide-react";
 
 const items = [
@@ -12,6 +12,7 @@ const items = [
     { to: "/admin/einladungen", icon: Ticket, label: "Einladungen" },
     { to: "/admin/dateien", icon: FileText, label: "Dateien" },
     { to: "/admin/meldungen", icon: Flag, label: "Meldungen" },
+    { to: "/admin/einstellungen", icon: Mail, label: "E-Mail (SMTP)" },
     { to: "/admin/system", icon: Server, label: "System" },
 ];
 

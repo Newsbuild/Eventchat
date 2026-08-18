@@ -110,6 +110,16 @@ export default function Login() {
                         >
                             {loading ? "Verbinde…" : "Anmelden →"}
                         </button>
+
+                        <div className="text-center">
+                            <Link
+                                to="/forgot-password"
+                                data-testid="forgot-password-link"
+                                className="text-xs text-zinc-500 hover:text-cyan-400 transition-colors font-mono"
+                            >
+                                Passwort vergessen?
+                            </Link>
+                        </div>
                     </form>
 
                     <div className="mt-6 pt-6 border-t border-zinc-800">

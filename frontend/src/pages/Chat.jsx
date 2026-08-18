@@ -10,8 +10,12 @@ import {
 import { Avatar } from "@/components/app/Avatar";
 import { ReadReceipt } from "@/components/app/ReadReceipt";
 import {
+    generateKeyPair, importPrivateKey, loadLocalPrivateKey, saveLocalPrivateKey,
+    encryptForRecipients, decryptMessage, encryptPrivateKeyForBackup, decryptPrivateKeyBackup,
+} from "@/lib/crypto";
+import {
     MessageSquare, Users, Plus, LogOut, Send, Paperclip, Flag,
-    EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2, Bell, BellRing,
+    EyeOff, Settings, UserCircle2, Shield, Search, X, Hash, User2, Bell, BellRing, Lock, KeyRound,
 } from "lucide-react";
 
 const SECONDS_PER_MINUTE = 60;
@@ -44,7 +48,7 @@ function clockTime(iso) {
 export default function ChatPage() {
     const { chatId } = useParams();
     const navigate = useNavigate();
-    const { user, logout } = useAuth();
+    const { user, logout, refresh } = useAuth();
     const [chats, setChats] = useState([]);
     const [allUsers, setAllUsers] = useState([]);
     const [selectedChat, setSelectedChat] = useState(null);
@@ -67,6 +71,74 @@ export default function ChatPage() {
     const [notifPermission, setNotifPermission] = useState(
         typeof Notification !== "undefined" ? Notification.permission : "denied"
     );
+
+    // E2E state
+    const [privateKey, setPrivateKey] = useState(null);
+    const [needsKeyBackupPw, setNeedsKeyBackupPw] = useState(false);
+    const [decrypted, setDecrypted] = useState({}); // msg_id -> plaintext
+
+    // Initialize keypair on first mount
+    useEffect(() => {
+        if (!user?.id) return;
+        (async () => {
+            try {
+                // Case 1: local private key exists
+                const localPriv = loadLocalPrivateKey(user.id);
+                if (localPriv && user.public_key) {
+                    const imported = await importPrivateKey(localPriv);
+                    setPrivateKey(imported);
+                    return;
+                }
+                // Case 2: server has public key but we don't have private locally
+                if (user.public_key && !localPriv) {
+                    if (user.has_key_backup) {
+                        setNeedsKeyBackupPw(true);
+                        return;
+                    }
+                    // no backup — must regenerate; user will lose access to old encrypted messages
+                    toast.error("Verschlüsselungs-Schlüssel nicht gefunden. Alte verschlüsselte Nachrichten sind nicht mehr lesbar. Ein neuer Schlüssel wird erzeugt.");
+                }
+                // Case 3: no public key on server → generate fresh
+                const { publicKeyB64, privateKeyB64 } = await generateKeyPair();
+                saveLocalPrivateKey(user.id, privateKeyB64);
+                // Also make encrypted backup (using session password proxy — user is prompted separately)
+                // For simplicity: skip password-based backup on generation. User can enable via Profile later.
+                await api.put("/me/keys", { public_key: publicKeyB64 });
+                const imported = await importPrivateKey(privateKeyB64);
+                setPrivateKey(imported);
+                await refresh();
+                toast.success("E2E-Verschlüsselung aktiviert");
+            } catch (err) {
+                console.error("E2E init failed", err);
+            }
+        })();
+    }, [user?.id, refresh]);
+
+    const restoreKeyFromBackup = async (password) => {
+        try {
+            const { data } = await api.get("/me/keys/backup");
+            if (!data?.encrypted_private_key_backup) throw new Error("Kein Backup vorhanden");
+            const privB64 = await decryptPrivateKeyBackup(data.encrypted_private_key_backup, password);
+            saveLocalPrivateKey(user.id, privB64);
+            const imported = await importPrivateKey(privB64);
+            setPrivateKey(imported);
+            setNeedsKeyBackupPw(false);
+            toast.success("Schlüssel wiederhergestellt");
+        } catch (err) {
+            toast.error("Falsches Passwort oder beschädigtes Backup");
+        }
+    };
+
+    const createKeyBackup = async (password) => {
+        try {
+            const localPriv = loadLocalPrivateKey(user.id);
+            if (!localPriv) { toast.error("Kein lokaler Schlüssel"); return; }
+            const backup = await encryptPrivateKeyForBackup(localPriv, password);
+            await api.put("/me/keys/backup", { encrypted_private_key_backup: backup });
+            await refresh();
+            toast.success("Schlüssel-Backup gespeichert");
+        } catch (err) { toast.error("Backup fehlgeschlagen"); }
+    };
 
     const markRead = useCallback(async (id) => {
         try { await api.post(`/chats/${id}/read`); } catch (err) { console.error("mark read failed", err); }
@@ -160,15 +232,54 @@ export default function ChatPage() {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages.length, chatId]);
 
+    // Decrypt any encrypted messages as they arrive
+    useEffect(() => {
+        if (!privateKey || !user?.id) return;
+        (async () => {
+            const updates = {};
+            for (const m of messages) {
+                if (!m.encrypted || decrypted[m.id] !== undefined) continue;
+                const plain = await decryptMessage(m, user.id, privateKey);
+                updates[m.id] = plain ?? "🔒 nicht entschlüsselbar";
+            }
+            if (Object.keys(updates).length) {
+                setDecrypted((d) => ({ ...d, ...updates }));
+            }
+        })();
+    }, [messages, privateKey, user?.id, decrypted]);
+
+    const renderMessageText = (m) => {
+        if (!m.encrypted) return m.text || "";
+        if (decrypted[m.id] !== undefined) return decrypted[m.id];
+        return "🔒 entschlüssle…";
+    };
+
     const sendMessage = async (e) => {
         e?.preventDefault();
         if (!draft.trim() || !chatId) return;
         const text = draft;
         setDraft("");
         try {
-            await api.post(`/chats/${chatId}/messages`, { text });
+            // Determine if all members (incl. self) have public keys → encrypt
+            const members = selectedChat?.members || [];
+            const allHaveKeys = members.length > 0 && members.every((m) => !!m.public_key);
+            if (allHaveKeys && privateKey) {
+                const { ciphertext, enc_iv, enc_keys } = await encryptForRecipients(
+                    text,
+                    members.map((m) => ({ id: m.id, public_key: m.public_key })),
+                );
+                await api.post(`/chats/${chatId}/messages`, {
+                    text: ciphertext, encrypted: true, enc_iv, enc_keys,
+                });
+            } else {
+                await api.post(`/chats/${chatId}/messages`, { text });
+            }
             loadChat(chatId);
-        } catch { toast.error("Nachricht konnte nicht gesendet werden"); setDraft(text); }
+        } catch (err) {
+            console.error(err);
+            toast.error("Nachricht konnte nicht gesendet werden");
+            setDraft(text);
+        }
     };
 
     const handleFile = async (e) => {
@@ -193,11 +304,16 @@ export default function ChatPage() {
         loadChats();
     };
 
-    const reportMessage = async (msgId) => {
+    const reportMessage = async (msg) => {
         const reason = window.prompt("Meldungsgrund eingeben:");
         if (!reason) return;
         try {
-            await api.post(`/messages/${msgId}/report`, { reason });
+            // If encrypted, include our decrypted view so admin can review
+            const body = { reason };
+            if (msg.encrypted) {
+                body.plaintext_preview = decrypted[msg.id] || null;
+            }
+            await api.post(`/messages/${msg.id}/report`, body);
             toast.success("Nachricht gemeldet");
         } catch { toast.error("Meldung fehlgeschlagen"); }
     };
@@ -412,6 +528,14 @@ export default function ChatPage() {
                                 <span className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase">
                                     {selectedChat.members?.length ?? selectedChat.member_ids?.length} MITGL.
                                 </span>
+                                {privateKey && (
+                                    <span
+                                        className="flex items-center gap-1 font-mono text-[10px] tracking-widest text-cyan-400 border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 rounded-sm uppercase"
+                                        title="Ende-zu-Ende-verschlüsselt"
+                                    >
+                                        <Lock className="w-3 h-3" /> E2E
+                                    </span>
+                                )}
                                 {selectedChat.type === "group" && (
                                     <button
                                         onClick={() => setShowMembers(true)}
@@ -424,6 +548,13 @@ export default function ChatPage() {
                                 )}
                             </div>
                         </div>
+
+                        {needsKeyBackupPw && (
+                            <RestoreKeyBanner
+                                onRestore={restoreKeyFromBackup}
+                                onSkip={() => setNeedsKeyBackupPw(false)}
+                            />
+                        )}
 
                         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3" data-testid="messages-container">
                             {messages.length === 0 && (
@@ -462,7 +593,7 @@ export default function ChatPage() {
                                                     <em className="text-zinc-500 text-sm">Nachricht entfernt durch Moderation</em>
                                                 ) : (
                                                     <>
-                                                        <div className="text-sm whitespace-pre-wrap break-words">{m.text}</div>
+                                                        <div className="text-sm whitespace-pre-wrap break-words">{renderMessageText(m)}</div>
                                                         {m.upload_id && (
                                                             <a
                                                                 href={`${process.env.REACT_APP_BACKEND_URL}/api/uploads/${m.upload_id}/download`}
@@ -475,11 +606,14 @@ export default function ChatPage() {
                                                     </>
                                                 )}
                                                 <div className="flex items-center justify-between gap-3 mt-1">
-                                                    <span className="font-mono text-[10px] text-zinc-500">{clockTime(m.created_at)}</span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="font-mono text-[10px] text-zinc-500">{clockTime(m.created_at)}</span>
+                                                        {m.encrypted && <Lock className="w-2.5 h-2.5 text-cyan-400/70" data-testid={`enc-${m.id}`} title="Ende-zu-Ende-verschlüsselt" />}
+                                                    </div>
                                                     <div className="flex items-center gap-2">
                                                         {!mine && !m.deleted && (
                                                             <button
-                                                                onClick={() => reportMessage(m.id)}
+                                                                onClick={() => reportMessage(m)}
                                                                 data-testid={`report-${m.id}`}
                                                                 className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-amber-400 transition-opacity"
                                                                 title="Melden"
@@ -742,6 +876,38 @@ function ManageMembersModal({ chat, allUsers, canAdmin, onClose }) {
                     )}
                 </div>
             </div>
+        </div>
+    );
+}
+
+
+function RestoreKeyBanner({ onRestore, onSkip }) {
+    const [pw, setPw] = useState("");
+    const [busy, setBusy] = useState(false);
+    return (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-6 py-3 flex items-center gap-3" data-testid="restore-key-banner">
+            <KeyRound className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+                <div className="text-sm text-amber-300 font-medium">Schlüssel wiederherstellen</div>
+                <div className="text-xs text-amber-200/70">Ihr Verschlüsselungs-Schlüssel ist lokal nicht verfügbar. Geben Sie Ihr Backup-Passwort ein, um verschlüsselte Nachrichten zu entschlüsseln.</div>
+            </div>
+            <input
+                type="password"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                data-testid="restore-key-password-input"
+                placeholder="Backup-Passwort"
+                className="px-3 py-1.5 bg-zinc-950 border border-zinc-800 focus:border-amber-500 outline-none rounded-sm text-sm text-zinc-100 w-48"
+            />
+            <button
+                onClick={async () => { setBusy(true); await onRestore(pw); setBusy(false); }}
+                disabled={busy || !pw}
+                data-testid="restore-key-submit"
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-950 font-medium rounded-sm text-xs"
+            >
+                {busy ? "…" : "Wiederherstellen"}
+            </button>
+            <button onClick={onSkip} className="text-zinc-500 hover:text-zinc-300 text-xs" data-testid="restore-key-skip">Überspringen</button>
         </div>
     );
 }

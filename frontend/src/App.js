@@ -8,6 +8,8 @@ import { Toaster } from "@/components/ui/sonner";
 
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
 import ChatPage from "@/pages/Chat";
 import Profile from "@/pages/Profile";
 import AdminLayout from "@/pages/admin/AdminLayout";
@@ -19,6 +21,7 @@ import AdminReports from "@/pages/admin/Reports";
 import AdminSystem from "@/pages/admin/System";
 import AdminInvites from "@/pages/admin/Invites";
 import AdminCustomRoles from "@/pages/admin/CustomRoles";
+import AdminSettings from "@/pages/admin/Settings";
 
 function RootRedirect() {
     const { user, loading } = useAuth();
@@ -38,6 +41,8 @@ function App() {
                         <Route path="/" element={<RootRedirect />} />
                         <Route path="/login" element={<Login />} />
                         <Route path="/register" element={<Register />} />
+                        <Route path="/forgot-password" element={<ForgotPassword />} />
+                        <Route path="/reset-password" element={<ResetPassword />} />
                         <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
                         <Route path="/chat/:chatId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
                         <Route path="/profil" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
@@ -49,6 +54,7 @@ function App() {
                             <Route path="einladungen" element={<AdminInvites />} />
                             <Route path="dateien" element={<AdminFiles />} />
                             <Route path="meldungen" element={<AdminReports />} />
+                            <Route path="einstellungen" element={<AdminSettings />} />
                             <Route path="system" element={<AdminSystem />} />
                         </Route>
                     </Routes>

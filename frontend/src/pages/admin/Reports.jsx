@@ -95,6 +95,17 @@ export default function AdminReports() {
                             </div>
                             {r.message?.deleted ? (
                                 <em className="text-zinc-500 text-sm">Nachricht wurde bereits gelöscht.</em>
+                            ) : r.message?.encrypted ? (
+                                r.plaintext_preview ? (
+                                    <>
+                                        <div className="text-sm text-zinc-200 whitespace-pre-wrap">{r.plaintext_preview}</div>
+                                        <div className="mt-2 font-mono text-[10px] text-cyan-400/70 uppercase tracking-widest">
+                                            E2E-verschlüsselt · Klartext vom Melder bereitgestellt
+                                        </div>
+                                    </>
+                                ) : (
+                                    <em className="text-zinc-500 text-sm">🔒 Ende-zu-Ende-verschlüsselt · Melder hat keinen Klartext geteilt</em>
+                                )
                             ) : (
                                 <div className="text-sm text-zinc-200 whitespace-pre-wrap">{r.message?.text || <em>(kein Text)</em>}</div>
                             )}

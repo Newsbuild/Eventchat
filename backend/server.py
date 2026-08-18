@@ -5,9 +5,14 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import uuid
+import secrets
+import smtplib
+import ssl
+import asyncio
 import logging
+from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import bcrypt
 import jwt
@@ -82,6 +87,8 @@ def sanitize_user(u: dict) -> dict:
         "is_customer": u.get("is_customer", False),
         "custom_roles": u.get("custom_roles", []),
         "avatar_upload_id": u.get("avatar_upload_id"),
+        "public_key": u.get("public_key"),
+        "has_key_backup": bool(u.get("encrypted_private_key_backup")),
         "created_at": u.get("created_at"),
         "last_seen": u.get("last_seen"),
     }
@@ -170,10 +177,15 @@ class SetGroupAdminIn(BaseModel):
 class SendMessageIn(BaseModel):
     text: Optional[str] = None
     upload_id: Optional[str] = None
+    # E2E fields (optional; only used for encrypted text messages)
+    encrypted: Optional[bool] = False
+    enc_iv: Optional[str] = None
+    enc_keys: Optional[Dict[str, str]] = None  # user_id -> base64 encrypted AES key
 
 
 class ReportIn(BaseModel):
     reason: str
+    plaintext_preview: Optional[str] = None  # for E2E: reporter voluntarily shares decrypted text
 
 
 class AdminCreateGroupIn(BaseModel):
@@ -200,6 +212,39 @@ class RegisterIn(BaseModel):
     email: str
     name: str
     password: str
+
+
+class SmtpSettingsIn(BaseModel):
+    host: str
+    port: int = 587
+    username: Optional[str] = None
+    password: Optional[str] = None
+    from_email: str
+    from_name: Optional[str] = "Event-Chat"
+    use_tls: bool = True
+    use_ssl: bool = False
+
+
+class SmtpTestIn(BaseModel):
+    to: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str
+
+
+class E2EPublicKeyIn(BaseModel):
+    public_key: str  # base64-encoded SPKI
+    encrypted_private_key_backup: Optional[str] = None  # base64, encrypted with user password
+
+
+class E2EBackupIn(BaseModel):
+    encrypted_private_key_backup: str
 
 
 # ---------- Auth ----------
@@ -595,6 +640,10 @@ async def send_message(chat_id: str, data: SendMessageIn, user: dict = Depends(g
         "text": data.text, "upload_id": data.upload_id, "type": "text",
         "deleted": False, "created_at": now_iso(),
     }
+    if data.encrypted:
+        msg["encrypted"] = True
+        msg["enc_iv"] = data.enc_iv
+        msg["enc_keys"] = data.enc_keys or {}
     await db.messages.insert_one(msg)
     return {k: v for k, v in msg.items() if k != "_id"}
 
@@ -716,6 +765,7 @@ async def report_message(message_id: str, data: ReportIn, user: dict = Depends(g
     rep = {
         "id": str(uuid.uuid4()), "message_id": message_id, "chat_id": msg["chat_id"],
         "reporter_id": user["id"], "reason": data.reason,
+        "plaintext_preview": data.plaintext_preview,  # provided by reporter for E2E messages
         "status": "pending",  # pending | resolved_kept | resolved_deleted
         "created_at": now_iso(), "resolved_at": None, "resolved_by": None,
     }
@@ -1063,6 +1113,171 @@ async def admin_moderation_log(admin: dict = Depends(require_admin)):
     return log
 
 
+# ---------- SMTP Settings + Password Reset ----------
+async def get_smtp_settings() -> Optional[dict]:
+    return await db.settings.find_one({"key": "smtp"}, {"_id": 0})
+
+
+def _send_email_sync(cfg: dict, to_email: str, subject: str, body: str) -> None:
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    from_addr = cfg.get("from_email") or cfg.get("username")
+    from_name = cfg.get("from_name") or "Event-Chat"
+    msg["From"] = f"{from_name} <{from_addr}>"
+    msg["To"] = to_email
+    msg.set_content(body)
+
+    host = cfg["host"]
+    port = int(cfg.get("port") or 587)
+    if cfg.get("use_ssl"):
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=15) as s:
+            if cfg.get("username"):
+                s.login(cfg["username"], cfg.get("password") or "")
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=15) as s:
+            s.ehlo()
+            if cfg.get("use_tls"):
+                s.starttls(context=ssl.create_default_context())
+                s.ehlo()
+            if cfg.get("username"):
+                s.login(cfg["username"], cfg.get("password") or "")
+            s.send_message(msg)
+
+
+async def send_email(to_email: str, subject: str, body: str) -> bool:
+    cfg = await get_smtp_settings()
+    if not cfg or not cfg.get("host"):
+        logger.warning("SMTP not configured — email not sent")
+        return False
+    try:
+        await asyncio.to_thread(_send_email_sync, cfg, to_email, subject, body)
+        return True
+    except Exception as e:
+        logger.error(f"Email send failed: {e}")
+        return False
+
+
+@api.get("/admin/settings/smtp")
+async def admin_get_smtp(admin: dict = Depends(require_admin)):
+    cfg = await get_smtp_settings()
+    if not cfg:
+        return {}
+    # never return password
+    out = {k: v for k, v in cfg.items() if k not in ("_id", "password")}
+    out["password_set"] = bool(cfg.get("password"))
+    return out
+
+
+@api.put("/admin/settings/smtp")
+async def admin_set_smtp(data: SmtpSettingsIn, admin: dict = Depends(require_admin)):
+    upd = data.dict()
+    # If password is empty string, keep existing
+    existing = await get_smtp_settings() or {}
+    if not upd.get("password"):
+        upd["password"] = existing.get("password")
+    upd["key"] = "smtp"
+    upd["updated_at"] = now_iso()
+    upd["updated_by"] = admin["id"]
+    await db.settings.update_one({"key": "smtp"}, {"$set": upd}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/admin/settings/smtp/test")
+async def admin_test_smtp(data: SmtpTestIn, admin: dict = Depends(require_admin)):
+    cfg = await get_smtp_settings()
+    if not cfg:
+        raise HTTPException(400, "SMTP nicht konfiguriert")
+    try:
+        await asyncio.to_thread(_send_email_sync, cfg, data.to,
+                                "Test-Mail vom Event-Chat",
+                                "Diese Test-Mail bestätigt, dass die SMTP-Konfiguration funktioniert.")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, f"SMTP-Test fehlgeschlagen: {e}")
+
+
+@api.post("/auth/forgot-password")
+async def forgot_password(data: ForgotPasswordIn, request: Request):
+    email = data.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    # Always return success to prevent email enumeration
+    if user:
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        await db.password_resets.insert_one({
+            "id": str(uuid.uuid4()), "token": token, "user_id": user["id"],
+            "expires_at": expires_at, "used": False, "created_at": now_iso(),
+        })
+        # Build reset URL from request origin
+        origin = request.headers.get("origin") or request.headers.get("referer", "").rstrip("/")
+        if not origin:
+            origin = ""
+        reset_url = f"{origin}/reset-password?token={token}"
+        body = (
+            f"Hallo {user['name']},\n\n"
+            f"Sie haben ein neues Passwort für den Event-Chat angefordert.\n"
+            f"Bitte klicken Sie auf den folgenden Link, um Ihr Passwort zurückzusetzen:\n\n"
+            f"{reset_url}\n\n"
+            f"Der Link ist 1 Stunde gültig.\n\n"
+            f"Falls Sie diese E-Mail nicht angefordert haben, ignorieren Sie sie bitte.\n"
+        )
+        sent = await send_email(user["email"], "Passwort zurücksetzen", body)
+        if not sent:
+            logger.warning(f"Password reset requested for {email} but email not sent (SMTP down?)")
+    return {"ok": True}
+
+
+@api.post("/auth/reset-password")
+async def reset_password(data: ResetPasswordIn):
+    if len(data.password) < 6:
+        raise HTTPException(400, "Passwort muss mindestens 6 Zeichen haben")
+    reset = await db.password_resets.find_one({"token": data.token, "used": False}, {"_id": 0})
+    if not reset:
+        raise HTTPException(400, "Link ungültig oder bereits benutzt")
+    try:
+        exp = datetime.fromisoformat(reset["expires_at"].replace("Z", "+00:00"))
+        if exp < datetime.now(timezone.utc):
+            raise HTTPException(400, "Link ist abgelaufen")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "Link ungültig")
+    await db.users.update_one(
+        {"id": reset["user_id"]},
+        {"$set": {"password_hash": hash_password(data.password)},
+         "$unset": {"encrypted_private_key_backup": ""}},  # invalidate E2E backup (was encrypted with old password)
+    )
+    await db.password_resets.update_one({"token": data.token}, {"$set": {"used": True, "used_at": now_iso()}})
+    return {"ok": True}
+
+
+# ---------- E2E Encryption: Key Management ----------
+@api.put("/me/keys")
+async def upload_public_key(data: E2EPublicKeyIn, user: dict = Depends(get_current_user)):
+    upd = {"public_key": data.public_key}
+    if data.encrypted_private_key_backup is not None:
+        upd["encrypted_private_key_backup"] = data.encrypted_private_key_backup
+    await db.users.update_one({"id": user["id"]}, {"$set": upd})
+    return {"ok": True}
+
+
+@api.put("/me/keys/backup")
+async def upload_private_key_backup(data: E2EBackupIn, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"encrypted_private_key_backup": data.encrypted_private_key_backup}},
+    )
+    return {"ok": True}
+
+
+@api.get("/me/keys/backup")
+async def get_private_key_backup(user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "encrypted_private_key_backup": 1})
+    return {"encrypted_private_key_backup": (u or {}).get("encrypted_private_key_backup")}
+
+
 # ---------- Admin: Custom Roles ----------
 @api.get("/admin/custom-roles")
 async def admin_list_custom_roles(admin: dict = Depends(require_admin)):
@@ -1178,6 +1393,8 @@ async def startup():
     await db.chat_reads.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
     await db.invite_codes.create_index("code", unique=True)
     await db.custom_roles.create_index("name", unique=True)
+    await db.password_resets.create_index("token", unique=True)
+    await db.settings.create_index("key", unique=True)
 
     # seed admin
     admin = await db.users.find_one({"email": ADMIN_EMAIL.lower()}, {"_id": 0})
