@@ -177,6 +177,20 @@ class AdminEditGroupIn(BaseModel):
     admin_ids: Optional[List[str]] = None
 
 
+class InviteCreateIn(BaseModel):
+    role: str = "user"  # user | admin
+    is_customer: bool = False
+    expires_at: Optional[str] = None  # ISO datetime string
+    note: Optional[str] = None
+
+
+class RegisterIn(BaseModel):
+    code: str
+    email: str
+    name: str
+    password: str
+
+
 # ---------- Auth ----------
 @api.post("/auth/login")
 async def login(data: LoginIn, response: Response):
@@ -201,6 +215,83 @@ async def logout(response: Response, user: dict = Depends(get_current_user)):
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return sanitize_user(user)
+
+
+# ---------- Registration via Invite Code (public) ----------
+def _generate_invite_code() -> str:
+    import secrets, string
+    alphabet = string.ascii_uppercase + string.digits
+    parts = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(2)]
+    return "EVT-" + "-".join(parts)
+
+
+async def _validate_invite(code: str) -> dict:
+    code = (code or "").strip().upper()
+    if not code:
+        raise HTTPException(400, "Kein Einladungscode angegeben")
+    inv = await db.invite_codes.find_one({"code": code}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Einladungscode ungültig")
+    if inv.get("used"):
+        raise HTTPException(400, "Einladungscode wurde bereits eingelöst")
+    if inv.get("expires_at"):
+        try:
+            exp = datetime.fromisoformat(inv["expires_at"].replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                raise HTTPException(400, "Einladungscode ist abgelaufen")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    return inv
+
+
+@api.get("/auth/invite/{code}")
+async def check_invite(code: str):
+    inv = await _validate_invite(code)
+    return {
+        "code": inv["code"],
+        "role": inv["role"],
+        "is_customer": inv.get("is_customer", False),
+        "expires_at": inv.get("expires_at"),
+        "note": inv.get("note"),
+    }
+
+
+@api.post("/auth/register")
+async def register(data: RegisterIn, response: Response):
+    inv = await _validate_invite(data.code)
+    email = data.email.strip().lower()
+    if not email or not data.name.strip() or not data.password:
+        raise HTTPException(400, "E-Mail, Name und Passwort erforderlich")
+    if len(data.password) < 6:
+        raise HTTPException(400, "Passwort muss mindestens 6 Zeichen haben")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "E-Mail bereits registriert")
+
+    uid = str(uuid.uuid4())
+    user_doc = {
+        "id": uid, "email": email, "name": data.name.strip(),
+        "role": inv.get("role", "user"),
+        "is_customer": inv.get("is_customer", False),
+        "password_hash": hash_password(data.password),
+        "created_at": now_iso(), "last_seen": now_iso(),
+        "registered_via_invite": inv["code"],
+    }
+    await db.users.insert_one(user_doc)
+    await db.invite_codes.update_one(
+        {"code": inv["code"]},
+        {"$set": {"used": True, "used_by": uid, "used_at": now_iso()}},
+    )
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "invite_redeemed",
+        "target_id": uid, "actor_id": uid,
+        "note": f"code={inv['code']}", "created_at": now_iso(),
+    })
+    access = create_access_token(uid, email, user_doc["role"])
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return sanitize_user(user_doc)
 
 
 # ---------- Users ----------
@@ -740,6 +831,65 @@ async def admin_unarchive_group(chat_id: str, admin: dict = Depends(require_admi
     return {"ok": True, "archived": False}
 
 
+# ---------- Admin: Invite Codes ----------
+@api.get("/admin/invites")
+async def admin_list_invites(admin: dict = Depends(require_admin)):
+    invites = await db.invite_codes.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # enrich with user name if used
+    for inv in invites:
+        if inv.get("used_by"):
+            u = await db.users.find_one({"id": inv["used_by"]}, {"_id": 0, "name": 1, "email": 1})
+            if u:
+                inv["used_by_name"] = u["name"]
+                inv["used_by_email"] = u["email"]
+    return invites
+
+
+@api.post("/admin/invites")
+async def admin_create_invite(data: InviteCreateIn, admin: dict = Depends(require_admin)):
+    if data.role not in ("user", "admin"):
+        raise HTTPException(400, "Rolle muss 'user' oder 'admin' sein")
+    # generate unique code
+    for _ in range(10):
+        code = _generate_invite_code()
+        if not await db.invite_codes.find_one({"code": code}, {"_id": 0}):
+            break
+    else:
+        raise HTTPException(500, "Konnte keinen eindeutigen Code erzeugen")
+
+    doc = {
+        "id": str(uuid.uuid4()), "code": code,
+        "role": data.role, "is_customer": data.is_customer,
+        "expires_at": data.expires_at, "note": data.note,
+        "used": False, "used_by": None, "used_at": None,
+        "created_by": admin["id"], "created_at": now_iso(),
+    }
+    await db.invite_codes.insert_one(doc)
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "invite_created",
+        "target_id": doc["id"], "actor_id": admin["id"],
+        "note": f"code={code} role={data.role} customer={data.is_customer}",
+        "created_at": now_iso(),
+    })
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/admin/invites/{invite_id}")
+async def admin_delete_invite(invite_id: str, admin: dict = Depends(require_admin)):
+    inv = await db.invite_codes.find_one({"id": invite_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Nicht gefunden")
+    if inv.get("used"):
+        raise HTTPException(400, "Eingelöste Codes können nicht gelöscht werden")
+    await db.invite_codes.delete_one({"id": invite_id})
+    await db.moderation_log.insert_one({
+        "id": str(uuid.uuid4()), "action": "invite_revoked",
+        "target_id": invite_id, "actor_id": admin["id"],
+        "note": inv.get("code"), "created_at": now_iso(),
+    })
+    return {"ok": True}
+
+
 @api.get("/admin/uploads")
 async def admin_list_uploads(admin: dict = Depends(require_admin)):
     items = await db.uploads.find({}, {"_id": 0}).to_list(1000)
@@ -856,6 +1006,7 @@ async def startup():
     await db.uploads.create_index("id", unique=True)
     await db.reports.create_index("status")
     await db.chat_reads.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
+    await db.invite_codes.create_index("code", unique=True)
 
     # seed admin
     admin = await db.users.find_one({"email": ADMIN_EMAIL.lower()}, {"_id": 0})

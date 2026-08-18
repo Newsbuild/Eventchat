@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiErrorDetail } from "@/lib/api";
-import { Terminal, Lock, Mail } from "lucide-react";
+import { Terminal, Lock, Mail, Ticket } from "lucide-react";
 
 export default function Login() {
     const { login } = useAuth();
@@ -111,6 +111,16 @@ export default function Login() {
                             {loading ? "Verbinde…" : "Anmelden →"}
                         </button>
                     </form>
+
+                    <div className="mt-6 pt-6 border-t border-zinc-800">
+                        <Link
+                            to="/register"
+                            data-testid="go-register-link"
+                            className="flex items-center justify-center gap-2 px-4 py-2 border border-zinc-700 hover:border-cyan-500 hover:text-cyan-400 text-zinc-300 rounded-sm text-sm font-mono transition-colors"
+                        >
+                            <Ticket className="w-4 h-4" /> Mit Einladungscode registrieren
+                        </Link>
+                    </div>
 
                     <div className="mt-10 pt-6 border-t border-zinc-800">
                         <div className="font-mono text-xs tracking-widest text-zinc-500 uppercase mb-2">Demo-Zugänge</div>

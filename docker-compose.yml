@@ -1,0 +1,49 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - eventchat
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      MONGO_URL: "mongodb://mongo:27017"
+      DB_NAME: "event_chat"
+      JWT_SECRET: "${JWT_SECRET}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@event.local}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      SEED_DEMO: "${SEED_DEMO:-false}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-*}"
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      - mongo
+    networks:
+      - eventchat
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # This URL is baked into the JS bundle. For same-origin nginx proxy setup
+        # leave it empty so the browser calls /api on its own host.
+        REACT_APP_BACKEND_URL: "${REACT_APP_BACKEND_URL:-}"
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - eventchat
+
+volumes:
+  mongo_data:
+  uploads_data:
+
+networks:
+  eventchat:
+    driver: bridge

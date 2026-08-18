@@ -7,6 +7,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Toaster } from "@/components/ui/sonner";
 
 import Login from "@/pages/Login";
+import Register from "@/pages/Register";
 import ChatPage from "@/pages/Chat";
 import Profile from "@/pages/Profile";
 import AdminLayout from "@/pages/admin/AdminLayout";
@@ -16,6 +17,7 @@ import AdminGroups from "@/pages/admin/Groups";
 import AdminFiles from "@/pages/admin/Files";
 import AdminReports from "@/pages/admin/Reports";
 import AdminSystem from "@/pages/admin/System";
+import AdminInvites from "@/pages/admin/Invites";
 
 function RootRedirect() {
     const { user, loading } = useAuth();
@@ -34,6 +36,7 @@ function App() {
                     <Routes>
                         <Route path="/" element={<RootRedirect />} />
                         <Route path="/login" element={<Login />} />
+                        <Route path="/register" element={<Register />} />
                         <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
                         <Route path="/chat/:chatId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
                         <Route path="/profil" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
@@ -41,6 +44,7 @@ function App() {
                             <Route index element={<AdminDashboard />} />
                             <Route path="nutzer" element={<AdminUsers />} />
                             <Route path="gruppen" element={<AdminGroups />} />
+                            <Route path="einladungen" element={<AdminInvites />} />
                             <Route path="dateien" element={<AdminFiles />} />
                             <Route path="meldungen" element={<AdminReports />} />
                             <Route path="system" element={<AdminSystem />} />
